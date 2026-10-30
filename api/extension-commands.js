@@ -1,0 +1,37 @@
+import pg from 'pg';
+import crypto from 'node:crypto';
+const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:true}});
+const allowed=new Set(['open_listing','inspect_active']);
+const reply=(res,code,body)=>{res.setHeader('Cache-Control','no-store');return res.status(code).json(body)};
+function authorized(req){const a=(req.headers.authorization||'').replace(/^Bearer /i,'');const b=process.env.DASHBOARD_ADMIN_KEY||'';return !!b&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}
+export default async function handler(req,res){
+ if(!authorized(req))return reply(res,401,{error:'Unauthorized'});
+ try{
+  if(req.method==='POST'){
+   const {action,payload}=req.body||{};
+   if(!allowed.has(action)||!payload||typeof payload!=='object'||Array.isArray(payload))return reply(res,400,{error:'Invalid command'});
+   if(action==='open_listing'){
+    let u;try{u=new URL(payload.url)}catch{return reply(res,400,{error:'Invalid URL'})}
+    if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\/hotel\/ma\/[a-z0-9-]+\.en-gb\.html$/.test(u.pathname))return reply(res,400,{error:'Only Booking.com Morocco listings allowed'});
+   }
+   const r=await pool.query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[action,JSON.stringify(payload)]);
+   return reply(res,201,{command:r.rows[0]});
+  }
+  if(req.method==='GET'){
+   if(req.query?.id){
+    if(!/^\d+$/.test(String(req.query.id)))return reply(res,400,{error:'Invalid id'});
+    const r=await pool.query('SELECT id,action,status,result,created_at,finished_at FROM extension_commands WHERE id=$1',[req.query.id]);
+    return reply(res,200,{command:r.rows[0]||null});
+   }
+   const r=await pool.query("UPDATE extension_commands SET status='claimed',claimed_at=now() WHERE id=(SELECT id FROM extension_commands WHERE status='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,action,payload");
+   return reply(res,200,{command:r.rows[0]||null});
+  }
+  if(req.method==='PATCH'){
+   const {id,result}=req.body||{};
+   if(!Number.isSafeInteger(id)||!result||typeof result!=='object'||JSON.stringify(result).length>12000)return reply(res,400,{error:'Invalid result'});
+   const r=await pool.query("UPDATE extension_commands SET status='completed',result=$1::jsonb,finished_at=now() WHERE id=$2 AND status='claimed' RETURNING id,status",[JSON.stringify(result),id]);
+   return reply(res,r.rowCount?200:404,{command:r.rows[0]||null});
+  }
+  res.setHeader('Allow','GET, POST, PATCH');return reply(res,405,{error:'Method not allowed'});
+ }catch(e){console.error('extension commands',e.message);return reply(res,500,{error:'Command service unavailable'})}
+}
