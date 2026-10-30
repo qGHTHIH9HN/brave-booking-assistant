@@ -2,8 +2,9 @@ import pg from 'pg';
 import crypto from 'node:crypto';
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:true}});
 const allowed=new Set(['open_listing','inspect_active']);
+// Separate scoped token; intentionally do not fall back to dashboard admin credentials.
 const reply=(res,code,body)=>{res.setHeader('Cache-Control','no-store');return res.status(code).json(body)};
-function authorized(req){const a=(req.headers.authorization||'').replace(/^Bearer /i,'');const b=process.env.DASHBOARD_ADMIN_KEY||'';return !!b&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}
+function authorized(req){const a=(req.headers.authorization||'').replace(/^Bearer /i,'');const b=process.env.EXTENSION_COMMAND_TOKEN||'';return !!b&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}
 export default async function handler(req,res){
  if(!authorized(req))return reply(res,401,{error:'Unauthorized'});
  try{
