@@ -30,7 +30,7 @@ function cleanProperty(body) {
 }
 async function database() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL missing');
-  pool ||= new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 2, connectionTimeoutMillis: 10000 });
+  pool ||= new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: true }, max: 2, connectionTimeoutMillis: 10000 });
   await pool.query(`CREATE TABLE IF NOT EXISTS managed_properties (
     id uuid PRIMARY KEY,
     name text NOT NULL,
