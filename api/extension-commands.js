@@ -6,7 +6,13 @@ const connectionString=isProduction?process.env.DATABASE_URL:process.env.STAGING
 let pool;
 function db(){
  if(!connectionString)throw new Error('Command database is not configured for this environment');
- if(!pool)pool=new pg.Pool({connectionString,ssl:{rejectUnauthorized:true}});
+ if(!pool){
+  let url;
+  try{url=new URL(connectionString)}catch{throw Object.assign(new Error('Invalid staging database URL format'),{code:'CONFIG_URL_INVALID'})}
+  if(!['postgres:','postgresql:'].includes(url.protocol)||!url.hostname||!url.username||!url.pathname||url.pathname==='/')throw Object.assign(new Error('Staging database URL must be a PostgreSQL connection string'),{code:'CONFIG_URL_INVALID'});
+  pool=new pg.Pool({connectionString,ssl:{rejectUnauthorized:true},connectionTimeoutMillis:8000});
+ }
+
  return pool;
 }
 const allowed=new Set(['open_listing','inspect_active']);
@@ -42,5 +48,7 @@ export default async function handler(req,res){
    return reply(res,r.rowCount?200:404,{command:r.rows[0]||null});
   }
   res.setHeader('Allow','GET, POST, PATCH');return reply(res,405,{error:'Method not allowed'});
- }catch(e){console.error('extension commands',e.message);return reply(res,500,{error:'Command service unavailable'})}
+ }catch(e){console.error('extension commands',e.code||'NO_CODE',e.message);
+  const code=e.code==='CONFIG_URL_INVALID'?'staging_database_url_invalid':e.code==='28P01'?'staging_database_auth_failed':e.code==='42P01'?'staging_table_missing':e.code==='ENOTFOUND'?'staging_database_host_unreachable':e.message==='Invalid JSON'?'staging_database_invalid_json':'staging_database_connection_failed';
+  return reply(res,500,{error:'Command service unavailable',reason:code})}
 }
