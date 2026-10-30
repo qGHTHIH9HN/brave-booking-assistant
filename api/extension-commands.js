@@ -48,7 +48,7 @@ export default async function handler(req,res){
    return reply(res,r.rowCount?200:404,{command:r.rows[0]||null});
   }
   res.setHeader('Allow','GET, POST, PATCH');return reply(res,405,{error:'Method not allowed'});
- }catch(e){console.error('extension commands',e.code||'NO_CODE',e.message);
+ }catch(e){console.error('extension commands',e.code||'NO_CODE',e.message,'type',e.constructor?.name,'stack',String(e.stack||'').split('\\n').slice(0,5).join(' | '));
   const code=e.code==='CONFIG_URL_INVALID'?'staging_database_url_invalid':e.code==='28P01'?'staging_database_auth_failed':e.code==='42P01'?'staging_table_missing':e.code==='ENOTFOUND'?'staging_database_host_unreachable':e.message==='Invalid JSON'?'staging_database_invalid_json':'staging_database_connection_failed';
   return reply(res,500,{error:'Command service unavailable',reason:code})}
 }
