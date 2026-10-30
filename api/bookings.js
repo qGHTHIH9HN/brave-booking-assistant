@@ -27,7 +27,7 @@ function validate(input) {
 }
 async function db() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL missing');
-  pool ||= new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 2, connectionTimeoutMillis: 10000 });
+  pool ||= new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: true }, max: 2, connectionTimeoutMillis: 10000 });
   await pool.query(`CREATE TABLE IF NOT EXISTS managed_bookings (
     id uuid PRIMARY KEY,
     property_id uuid NOT NULL REFERENCES managed_properties(id) ON DELETE RESTRICT,
