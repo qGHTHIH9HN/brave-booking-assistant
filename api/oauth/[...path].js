@@ -1,5 +1,9 @@
 import crypto from 'node:crypto';
-const origin=req=>`https://${req.headers.host}`;
+import pg from 'pg';
+let pool;
+const database=()=>pool||(pool=new pg.Pool({connectionString:process.env.STAGING_DATABASE_URL,ssl:{rejectUnauthorized:true},connectionTimeoutMillis:8000}));
+async function codeStore(){const d=database();await d.query('CREATE TABLE IF NOT EXISTS oauth_codes (code_hash text PRIMARY KEY, expires_at timestamptz NOT NULL)');return d;}
+const origin=req=>`https://${process.env.VERCEL_URL||req.headers.host}`;
 const secret=()=>process.env.MCP_BRIDGE_TOKEN||'';
 const h=(s)=>crypto.createHmac('sha256',secret()).update(s).digest('base64url');
 const b=(x)=>Buffer.from(JSON.stringify(x)).toString('base64url');
@@ -33,6 +37,7 @@ export default async function handler(req,res){
   const got=String(a.owner_token||''),expected=secret();
   if(got.length!==expected.length||!crypto.timingSafeEqual(Buffer.from(got),Buffer.from(expected)))return json(res,403,{error:'access_denied'});
   const code=sign({kind:'code',client:a.client_id,redirect:a.redirect_uri,challenge:a.code_challenge,exp:Date.now()+120000,nonce:crypto.randomUUID()});
+  try{const d=await codeStore();await d.query('INSERT INTO oauth_codes(code_hash,expires_at) VALUES ($1,now()+interval \'2 minutes\')',[crypto.createHash('sha256').update(code).digest('hex')]);}catch(e){console.error('oauth code storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable'});}
   const u=new URL(a.redirect_uri);u.searchParams.set('code',code);if(a.state)u.searchParams.set('state',a.state);return res.redirect(302,u.toString());
  }
  if(path.endsWith('/token')){
@@ -41,6 +46,7 @@ export default async function handler(req,res){
   if(a.grant_type!=='authorization_code'||!code||!client||code.client!==a.client_id||code.redirect!==a.redirect_uri)return json(res,400,{error:'invalid_grant'});
   const digest=crypto.createHash('sha256').update(String(a.code_verifier||'')).digest('base64url');
   if(digest!==code.challenge)return json(res,400,{error:'invalid_grant'});
+  try{const d=await codeStore();const consumed=await d.query('DELETE FROM oauth_codes WHERE code_hash=$1 AND expires_at>now() RETURNING code_hash',[crypto.createHash('sha256').update(a.code).digest('hex')]);if(!consumed.rowCount)return json(res,400,{error:'invalid_grant'});}catch(e){console.error('oauth code consume',e.code||e.name);return json(res,503,{error:'temporarily_unavailable'});}
   const token=sign({kind:'access',scope:'brave:read',exp:Date.now()+3600000});
   return json(res,200,{access_token:token,token_type:'Bearer',expires_in:3600,scope:'brave:read'});
  }
