@@ -3,7 +3,7 @@ import pg from 'pg';
 let pool;
 const database=()=>pool||(pool=new pg.Pool({connectionString:process.env.STAGING_DATABASE_URL,ssl:{rejectUnauthorized:true},connectionTimeoutMillis:8000}));
 async function codeStore(){const d=database();await d.query('CREATE TABLE IF NOT EXISTS oauth_codes (code_hash text PRIMARY KEY, expires_at timestamptz NOT NULL)');return d;}
-const origin=req=>`https://${process.env.VERCEL_URL||req.headers.host}`;
+const origin=req=>`https://${req.headers.host}`;
 const secret=()=>process.env.MCP_BRIDGE_TOKEN||'';
 const h=(s)=>crypto.createHmac('sha256',secret()).update(s).digest('base64url');
 const b=(x)=>Buffer.from(JSON.stringify(x)).toString('base64url');
@@ -18,7 +18,8 @@ export default async function handler(req,res){
  if(!secret())return json(res,503,{error:'oauth_not_configured'});
  const path=(req.url||'').split('?')[0];
  const base=origin(req);
- if(path.endsWith('/.well-known/oauth-authorization-server')||path.endsWith('/.well-known/oauth-protected-resource'))return json(res,200,{issuer:base,resource:base+'/api/mcp',authorization_endpoint:base+'/api/oauth/authorize',token_endpoint:base+'/api/oauth/token',registration_endpoint:base+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['brave:read']});
+ if(path.endsWith('/.well-known/oauth-protected-resource'))return json(res,200,{resource:base+'/api/mcp',authorization_servers:[base]});
+ if(path.endsWith('/.well-known/oauth-authorization-server'))return json(res,200,{issuer:base,authorization_endpoint:base+'/api/oauth/authorize',token_endpoint:base+'/api/oauth/token',registration_endpoint:base+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['brave:read']});
  if(path.endsWith('/register')){
   if(req.method!=='POST')return json(res,405,{error:'method_not_allowed'});
   const a=req.body||{};if(!Array.isArray(a.redirect_uris)||a.redirect_uris.length<1||a.redirect_uris.length>5||!a.redirect_uris.every(isAllowedRedirect))return json(res,400,{error:'invalid_redirect_uri'});
