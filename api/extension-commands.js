@@ -15,7 +15,7 @@ function db(){
 
  return pool;
 }
-const allowed=new Set(['open_listing','inspect_active']);
+const allowed=new Set(['open_listing','inspect_active','start_booking','resume_booking','inspect_booking','confirm_booking']);
 // Separate scoped token; intentionally do not fall back to dashboard admin credentials.
 const reply=(res,code,body)=>{res.setHeader('Cache-Control','no-store');return res.status(code).json(body)};
 function authorized(req){const a=(req.headers.authorization||'').replace(/^Bearer /i,'');const b=process.env.EXTENSION_COMMAND_TOKEN||'';return !!b&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}
@@ -29,6 +29,17 @@ export default async function handler(req,res){
     let u;try{u=new URL(payload.url)}catch{return reply(res,400,{error:'Invalid URL'})}
     if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\/hotel\/ma\/[a-z0-9-]+\.en-gb\.html$/.test(u.pathname))return reply(res,400,{error:'Only Booking.com Morocco listings allowed'});
    }
+   if(JSON.stringify(payload).length>2500)return reply(res,400,{error:'Command too large'});
+   if(action==='start_booking'){
+    let u;try{u=new URL(payload.url)}catch{return reply(res,400,{error:'Invalid hotel URL'})}
+    if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\\/hotel\\/ma\\/[a-z0-9-]+\\.en-gb\\.html$/.test(u.pathname)||u.username||u.password)return reply(res,400,{error:'Only Morocco hotel listing URLs allowed'});
+    const dt=/^\\d{4}-\\d{2}-\\d{2}$/;
+    const a=new Date(String(payload.checkin)+'T00:00:00Z'),b=new Date(String(payload.checkout)+'T00:00:00Z');
+    if(!dt.test(payload.checkin)||!dt.test(payload.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return reply(res,400,{error:'Invalid stay dates'});
+    if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
+    if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
+    if(Object.keys(payload).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency'].includes(k)))return reply(res,400,{error:'Unexpected field; do not upload guest identities'});
+   }else if(!['open_listing'].includes(action)&&Object.keys(payload).length)return reply(res,400,{error:'This action takes no payload'});
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[action,JSON.stringify(payload)]);
    return reply(res,201,{command:r.rows[0]});
   }
