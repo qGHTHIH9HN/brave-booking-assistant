@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import pg from 'pg';
+import {valid as validOAuth} from './oauth/[...path].js';
 const allowed=new Set(['open_listing','inspect_active']);
 let pool;
 function db(){
@@ -27,7 +28,7 @@ function validateUrl(value){
 }
 export default async function handler(req,res){
  if(process.env.VERCEL_ENV==='production')return send(res,404,{error:'Not available in production'});
- if(!auth(req)){res.setHeader('WWW-Authenticate','Bearer realm="Brave Booking Assistant"');return send(res,401,{error:'Unauthorized',message:'A valid scoped access token is required'});}
+ if(!auth(req)&&!validOAuth((req.headers.authorization||'').replace(/^Bearer /i,''),'access')){res.setHeader('WWW-Authenticate','Bearer realm="Brave Booking Assistant"');return send(res,401,{error:'Unauthorized',message:'A valid scoped access token is required'});}
  if(req.method==='GET')return send(res,200,{name:'Brave Booking Assistant MCP Preview',version:'0.1.0',readOnly:true});
  if(req.method!=='POST')return send(res,405,{error:'Method not allowed'});
  let m;try{m=req.body;if(typeof m==='string')m=JSON.parse(m)}catch{return send(res,400,{error:'Invalid JSON'})}
