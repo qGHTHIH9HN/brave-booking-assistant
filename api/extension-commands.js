@@ -38,7 +38,7 @@ export default async function handler(req,res){
     const r=await db().query('SELECT id,action,status,result,created_at,finished_at FROM extension_commands WHERE id=$1',[req.query.id]);
     return reply(res,200,{command:r.rows[0]||null});
    }
-   const r=await db().query("UPDATE extension_commands SET status='claimed',claimed_at=now() WHERE id=(SELECT id FROM extension_commands WHERE status='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,action,payload");
+   const r=await db().query("UPDATE extension_commands SET status='claimed',claimed_at=now() WHERE id=(SELECT id FROM extension_commands WHERE status='pending' OR (status='claimed' AND claimed_at < now()-interval '3 minutes') ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,action,payload");
    return reply(res,200,{command:r.rows[0]||null});
   }
   if(req.method==='PATCH'){
