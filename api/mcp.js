@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import pg from 'pg';
 import {valid as validOAuth} from './oauth.js';
-const allowed=new Set(['open_listing','inspect_active','start_booking','resume_booking','inspect_booking','confirm_booking']);
+const safeCommands=new Set(['open_listing','inspect_active']);
+const bookingCommands=new Set(['start_booking','resume_booking','inspect_booking','confirm_booking']);
 let pool;
 function db(){
  const url=process.env.STAGING_DATABASE_URL;
@@ -42,14 +43,14 @@ export default async function handler(req,res){
  const name=m.params?.name,args=m.params?.arguments||{};
  try{
   if(name==='send_safe_command'){
-   if(!allowed.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported action'));
+   if(!safeCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported read-only action'));
    if(args.action==='open_listing'&&!validateUrl(args.url))return send(res,200,err(m.id,-32602,'Only Booking.com Morocco hotel listings allowed'));
    const payload=args.action==='open_listing'?{url:args.url}:{};
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[args.action,JSON.stringify(payload)]);
    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
   }
   if(name==='send_booking_command'){
-   if(!allowed.has(args.action)||args.action==='open_listing'||args.action==='inspect_active')return send(res,200,err(m.id,-32602,'Unsupported booking action'));
+   if(!bookingCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported booking action'));
    let payload={};
    if(args.action==='start_booking'){
     if(!validateUrl(args.url))return send(res,200,err(m.id,-32602,'Only approved Morocco hotel listing URLs allowed'));
