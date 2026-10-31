@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import pg from 'pg';
-import {valid as validOAuth} from './oauth/[...path].js';
+import {valid as validOAuth} from './oauth.js';
 const allowed=new Set(['open_listing','inspect_active']);
 let pool;
 function db(){
