@@ -30,15 +30,17 @@ export default async function handler(req,res){
  if(path.endsWith('/authorize')){
   const a=req.method==='POST'?req.body:req.query;
   const client=valid(a.client_id,'client');
+  const scope=String(a.scope||'brave:read').trim().split(/\s+/).filter(Boolean);
+  if(scope.some(x=>!['brave:read','brave:book'].includes(x)))return json(res,400,{error:'invalid_scope'});
   if(!client||!client.redirects.includes(a.redirect_uri)||a.response_type!=='code'||a.code_challenge_method!=='S256'||!/^[-_a-zA-Z0-9]{43,128}$/.test(a.code_challenge||''))return json(res,400,{error:'invalid_request'});
   if(req.method==='GET'){
    res.setHeader('Content-Type','text/html; charset=utf-8');
-   const fields=['client_id','redirect_uri','response_type','code_challenge','code_challenge_method','state'].map(k=>'<input type="hidden" name="'+k+'" value="'+String(a[k]||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'">').join('');
+   const fields=['client_id','redirect_uri','response_type','code_challenge','code_challenge_method','state','scope'].map(k=>'<input type="hidden" name="'+k+'" value="'+String(a[k]||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'">').join('');
    return res.status(200).send('<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Brave Booking Authorization</title></head><body style="font:16px system-ui;max-width:460px;margin:8vh auto;padding:20px"><h2>Authorize Brave Booking Assistant</h2><p>Allow browsing and reservation commands. Final booking submission requires a separate review and approval in your Brave extension.</p><form method="post">'+fields+'<label>Enter your private MCP bridge token <input name="owner_token" type="password" required autocomplete="off" style="display:block;width:100%;padding:10px;margin:12px 0"></label><button type="submit">Authorize</button></form></body></html>');
   }
   const got=String(a.owner_token||''),expected=secret();
   if(got.length!==expected.length||!crypto.timingSafeEqual(Buffer.from(got),Buffer.from(expected)))return json(res,403,{error:'access_denied'});
-  const code=sign({kind:'code',client:a.client_id,redirect:a.redirect_uri,challenge:a.code_challenge,exp:Date.now()+120000,nonce:crypto.randomUUID()});
+  const code=sign({kind:'code',client:a.client_id,redirect:a.redirect_uri,challenge:a.code_challenge,scope:scope.join(' '),exp:Date.now()+120000,nonce:crypto.randomUUID()});
   try{const d=await codeStore();await d.query('INSERT INTO oauth_codes(code_hash,expires_at) VALUES ($1,now()+interval \'2 minutes\')',[crypto.createHash('sha256').update(code).digest('hex')]);}catch(e){console.error('oauth code storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:e.code==='28P01'?'staging_database_credentials_invalid':e.code==='28000'?'staging_database_endpoint_unavailable':'staging_database_unavailable'});}
   const u=new URL(a.redirect_uri);u.searchParams.set('code',code);if(a.state)u.searchParams.set('state',a.state);return res.redirect(302,u.toString());
  }
@@ -49,8 +51,9 @@ export default async function handler(req,res){
   const digest=crypto.createHash('sha256').update(String(a.code_verifier||'')).digest('base64url');
   if(digest!==code.challenge)return json(res,400,{error:'invalid_grant'});
   try{const d=await codeStore();const consumed=await d.query('DELETE FROM oauth_codes WHERE code_hash=$1 AND expires_at>now() RETURNING code_hash',[crypto.createHash('sha256').update(a.code).digest('hex')]);if(!consumed.rowCount)return json(res,400,{error:'invalid_grant'});}catch(e){console.error('oauth code consume',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:e.code==='28P01'?'staging_database_credentials_invalid':e.code==='28000'?'staging_database_endpoint_unavailable':'staging_database_unavailable'});}
-  const token=sign({kind:'access',scope:'brave:read brave:book',exp:Date.now()+3600000});
-  return json(res,200,{access_token:token,token_type:'Bearer',expires_in:3600,scope:'brave:read brave:book'});
+  const granted=code.scope||'brave:read';
+  const token=sign({kind:'access',scope:granted,exp:Date.now()+3600000});
+  return json(res,200,{access_token:token,token_type:'Bearer',expires_in:3600,scope:granted});
  }
  return json(res,404,{error:'not_found'});
 }
