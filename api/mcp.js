@@ -30,7 +30,9 @@ function validateUrl(value){
 }
 export default async function handler(req,res){
  if(process.env.VERCEL_ENV==='production')return send(res,404,{error:'Not available in production'});
- if(!auth(req)&&!validOAuth((req.headers.authorization||'').replace(/^Bearer /i,''),'access')){res.setHeader('WWW-Authenticate','Bearer realm="Brave Booking Assistant"');return send(res,401,{error:'Unauthorized',message:'A valid scoped access token is required'});}
+ const bearer=(req.headers.authorization||'').replace(/^Bearer /i,'');
+ const ownerAllowed=auth(req),client=validOAuth(bearer,'access');
+ if(!ownerAllowed&&!client){res.setHeader('WWW-Authenticate','Bearer realm="Brave Booking Assistant"');return send(res,401,{error:'Unauthorized',message:'A valid scoped access token is required'});}
  if(req.method==='GET')return send(res,200,{name:'Brave Booking Assistant MCP Preview',version:'0.2.0',readOnly:false});
  if(req.method!=='POST')return send(res,405,{error:'Method not allowed'});
  let m;try{m=req.body;if(typeof m==='string')m=JSON.parse(m)}catch{return send(res,400,{error:'Invalid JSON'})}
@@ -50,6 +52,7 @@ export default async function handler(req,res){
    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
   }
   if(name==='send_booking_command'){
+   if(!ownerAllowed&&!String(client?.scope||'').split(' ').includes('brave:book'))return send(res,200,err(m.id,-32003,'Booking scope required; reconnect and authorize booking access'));
    if(!bookingCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported booking action'));
    let payload={};
    if(args.action==='start_booking'){
