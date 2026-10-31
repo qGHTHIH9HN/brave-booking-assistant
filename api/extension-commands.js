@@ -32,8 +32,8 @@ export default async function handler(req,res){
    if(JSON.stringify(payload).length>2500)return reply(res,400,{error:'Command too large'});
    if(action==='start_booking'){
     let u;try{u=new URL(payload.url)}catch{return reply(res,400,{error:'Invalid hotel URL'})}
-    if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\\/hotel\\/ma\\/[a-z0-9-]+\\.en-gb\\.html$/.test(u.pathname)||u.username||u.password)return reply(res,400,{error:'Only Morocco hotel listing URLs allowed'});
-    const dt=/^\\d{4}-\\d{2}-\\d{2}$/;
+    if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\/hotel\/ma\/[a-z0-9-]+\.en-gb\.html$/.test(u.pathname)||u.username||u.password)return reply(res,400,{error:'Only Morocco hotel listing URLs allowed'});
+    const dt=/^\d{4}-\d{2}-\d{2}$/;
     const a=new Date(String(payload.checkin)+'T00:00:00Z'),b=new Date(String(payload.checkout)+'T00:00:00Z');
     if(!dt.test(payload.checkin)||!dt.test(payload.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return reply(res,400,{error:'Invalid stay dates'});
     if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
