@@ -16,7 +16,8 @@ export default async function handler(req,res){
  res.setHeader('Cache-Control','no-store');
  if(process.env.VERCEL_ENV==='production')return json(res,404,{error:'not_found'});
  if(!secret())return json(res,503,{error:'oauth_not_configured'});
- const path=(req.url||'').split('?')[0];
+ const route=req.query?.route||'';
+ const path=route==='metadata'? '/.well-known/oauth-authorization-server':route==='resource'? '/.well-known/oauth-protected-resource': '/api/oauth/'+route;
  const base=origin(req);
  if(path.endsWith('/.well-known/oauth-protected-resource'))return json(res,200,{resource:base+'/api/mcp',authorization_servers:[base]});
  if(path.endsWith('/.well-known/oauth-authorization-server'))return json(res,200,{issuer:base,authorization_endpoint:base+'/api/oauth/authorize',token_endpoint:base+'/api/oauth/token',registration_endpoint:base+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['brave:read']});
