@@ -20,7 +20,7 @@ export default async function handler(req,res){
  const path=route==='metadata'? '/.well-known/oauth-authorization-server':route==='resource'? '/.well-known/oauth-protected-resource': '/api/oauth/'+route;
  const base=origin(req);
  if(path.endsWith('/.well-known/oauth-protected-resource'))return json(res,200,{resource:base+'/api/mcp',authorization_servers:[base]});
- if(path.endsWith('/.well-known/oauth-authorization-server'))return json(res,200,{issuer:base,authorization_endpoint:base+'/api/oauth/authorize',token_endpoint:base+'/api/oauth/token',registration_endpoint:base+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['brave:read','brave:book']});
+ if(path.endsWith('/.well-known/oauth-authorization-server'))return json(res,200,{issuer:base,authorization_endpoint:base+'/api/oauth/authorize',token_endpoint:base+'/api/oauth/token',registration_endpoint:base+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['brave:read','brave:control','brave:book']});
  if(path.endsWith('/register')){
   if(req.method!=='POST')return json(res,405,{error:'method_not_allowed'});
   const a=req.body||{};if(!Array.isArray(a.redirect_uris)||a.redirect_uris.length<1||a.redirect_uris.length>5||!a.redirect_uris.every(isAllowedRedirect))return json(res,400,{error:'invalid_redirect_uri'});
@@ -31,12 +31,12 @@ export default async function handler(req,res){
   const a=req.method==='POST'?req.body:req.query;
   const client=valid(a.client_id,'client');
   const scope=String(a.scope||'brave:read').trim().split(/\s+/).filter(Boolean);
-  if(scope.some(x=>!['brave:read','brave:book'].includes(x)))return json(res,400,{error:'invalid_scope'});
+  if(scope.some(x=>!['brave:read','brave:control','brave:book'].includes(x)))return json(res,400,{error:'invalid_scope'});
   if(!client||!client.redirects.includes(a.redirect_uri)||a.response_type!=='code'||a.code_challenge_method!=='S256'||!/^[-_a-zA-Z0-9]{43,128}$/.test(a.code_challenge||''))return json(res,400,{error:'invalid_request'});
   if(req.method==='GET'){
    res.setHeader('Content-Type','text/html; charset=utf-8');
    const fields=['client_id','redirect_uri','response_type','code_challenge','code_challenge_method','state','scope'].map(k=>'<input type="hidden" name="'+k+'" value="'+String(a[k]||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'">').join('');
-   return res.status(200).send('<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Brave Booking Authorization</title></head><body style="font:16px system-ui;max-width:460px;margin:8vh auto;padding:20px"><h2>Authorize Brave Booking Assistant</h2><p>Allow browsing and reservation commands. Final booking submission requires a separate review and approval in your Brave extension.</p><form method="post">'+fields+'<label>Enter your private MCP bridge token <input name="owner_token" type="password" required autocomplete="off" style="display:block;width:100%;padding:10px;margin:12px 0"></label><button type="submit">Authorize</button></form></body></html>');
+   return res.status(200).send('<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Brave Booking Authorization</title></head><body style="font:16px system-ui;max-width:460px;margin:8vh auto;padding:20px"><h2>Authorize Brave Booking Assistant</h2><p>Grant only the requested scopes: read to inspect approved pages, control to navigate and interact after local 10-minute authorization, and book for reservation operations. Booking confirmation requires separate approval in the Brave extension.</p><form method="post">'+fields+'<label>Enter your private MCP bridge token <input name="owner_token" type="password" required autocomplete="off" style="display:block;width:100%;padding:10px;margin:12px 0"></label><button type="submit">Authorize</button></form></body></html>');
   }
   const got=String(a.owner_token||''),expected=secret();
   if(got.length!==expected.length||!crypto.timingSafeEqual(Buffer.from(got),Buffer.from(expected)))return json(res,403,{error:'access_denied'});
