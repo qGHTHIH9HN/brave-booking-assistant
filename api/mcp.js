@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import pg from 'pg';
+import {validateBrowserCommand,READ_ACTIONS,BROWSER_ACTIONS} from './browser-command-utils.js';
 import {valid as validOAuth} from './oauth.js';
 const safeCommands=new Set(['open_listing','inspect_active']);
 const bookingCommands=new Set(['start_booking','resume_booking','inspect_booking','confirm_booking']);
@@ -22,6 +23,7 @@ const tool=(name,description,properties,required=[])=>({name,description,inputSc
 const tools=[
  tool('send_safe_command','Queue a read-only browser command; never books or pays.',{action:{type:'string',enum:['open_listing','inspect_active']},url:{type:'string',description:'Required only for open_listing; Booking.com Morocco hotel listing URL.'}},['action']),
  tool('send_booking_command','Queue a Booking.com reservation step in the user\'s Brave browser. start_booking navigates to guest details and final review. confirm_booking submits only after matching approval made locally in Brave.',{action:{type:'string',enum:['start_booking','resume_booking','inspect_booking','confirm_booking']},url:{type:'string',description:'Approved Booking.com Morocco hotel listing URL for start_booking'},checkin:{type:'string',description:'YYYY-MM-DD for start_booking'},checkout:{type:'string',description:'YYYY-MM-DD for start_booking'},adults:{type:'integer',minimum:1,maximum:8},roomType:{type:'string',description:'Preferred exact room type; use Tent for this case'},maxTotal:{type:'number',exclusiveMinimum:0},currency:{type:'string',enum:['EUR','MAD','USD','GBP']}},['action']),
+ tool('send_browser_command','Control approved Brave browser sites only. Read actions require brave:read; navigation, scrolling, clicking, and text search require brave:control and a temporary approval in the local extension. Never sends payments or bookings.',{action:{type:'string',enum:[...BROWSER_ACTIONS]},url:{type:'string',description:'HTTPS URL for browser_open_url; host must be locally approved in Brave'},selector:{type:'string',description:'CSS selector for click or type_text'},text:{type:'string',description:'Short nonsensitive text, only for browser_type_text'},direction:{type:'string',enum:['up','down']},pixels:{type:'integer',minimum:1,maximum:1200}},['action']),
  tool('get_command_status','Read status and result of an existing command.',{id:{type:'integer',minimum:1}},['id'])
 ];
 function validateUrl(value){
@@ -49,6 +51,14 @@ export default async function handler(req,res){
    if(args.action==='open_listing'&&!validateUrl(args.url))return send(res,200,err(m.id,-32602,'Only Booking.com Morocco hotel listings allowed'));
    const payload=args.action==='open_listing'?{url:args.url}:{};
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[args.action,JSON.stringify(payload)]);
+   return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
+  }
+  if(name==='send_browser_command'){
+   const scope=String(client?.scope||'').split(' ');
+   const isRead=READ_ACTIONS.has(args.action);
+   if(!ownerAllowed&&!scope.includes(isRead?'brave:read':'brave:control')&&!(isRead&&scope.includes('brave:control')))return send(res,200,err(m.id,-32003,isRead?'Browsing read scope required':'Brave browser control scope required; reconnect and authorize this access'));
+   let c;try{c=validateBrowserCommand(args)}catch(e){return send(res,200,err(m.id,-32602,e.message));}
+   const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[c.action,JSON.stringify(c.payload)]);
    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
   }
   if(name==='send_booking_command'){
