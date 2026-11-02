@@ -1,5 +1,6 @@
 import pg from 'pg';
 import crypto from 'node:crypto';
+import {BROWSER_ACTIONS,validateBrowserCommand} from './browser-command-utils.js';
 // Preview must use the isolated staging branch, never the production DATABASE_URL.
 const isProduction=process.env.VERCEL_ENV==='production';
 const connectionString=isProduction?process.env.DATABASE_URL:process.env.STAGING_DATABASE_URL;
@@ -15,7 +16,7 @@ function db(){
 
  return pool;
 }
-const allowed=new Set(['open_listing','inspect_active','start_booking','resume_booking','inspect_booking','confirm_booking']);
+const allowed=new Set(['open_listing','inspect_active','start_booking','resume_booking','inspect_booking','confirm_booking',...BROWSER_ACTIONS]);
 // Separate scoped token; intentionally do not fall back to dashboard admin credentials.
 const reply=(res,code,body)=>{res.setHeader('Cache-Control','no-store');return res.status(code).json(body)};
 function authorized(req){const a=(req.headers.authorization||'').replace(/^Bearer /i,'');const b=process.env.EXTENSION_COMMAND_TOKEN||'';return !!b&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}
@@ -39,6 +40,9 @@ export default async function handler(req,res){
     if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
     if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
     if(Object.keys(payload).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency'].includes(k)))return reply(res,400,{error:'Unexpected field; do not upload guest identities'});
+   }else if(BROWSER_ACTIONS.includes(action)){
+    let validated;try{validated=validateBrowserCommand({action,...payload})}catch(e){return reply(res,400,{error:e.message})}
+    if(JSON.stringify(validated.payload)!==JSON.stringify(payload))return reply(res,400,{error:'Unexpected browser payload shape'});
    }else if(!['open_listing'].includes(action)&&Object.keys(payload).length)return reply(res,400,{error:'This action takes no payload'});
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[action,JSON.stringify(payload)]);
    return reply(res,201,{command:r.rows[0]});
