@@ -1,5 +1,6 @@
 import pg from 'pg';
 import crypto from 'node:crypto';
+import {valid as validOAuth} from './oauth.js';
 import {BROWSER_ACTIONS,validateBrowserCommand} from './browser-command-utils.js';
 // Preview must use the isolated staging branch, never the production DATABASE_URL.
 const isProduction=process.env.VERCEL_ENV==='production';
@@ -19,7 +20,15 @@ function db(){
 const allowed=new Set(['open_listing','inspect_active','start_booking','resume_booking','inspect_booking','confirm_booking',...BROWSER_ACTIONS]);
 // Separate scoped token; intentionally do not fall back to dashboard admin credentials.
 const reply=(res,code,body)=>{res.setHeader('Cache-Control','no-store');return res.status(code).json(body)};
-function authorized(req){const a=(req.headers.authorization||'').replace(/^Bearer /i,'');const b=process.env.EXTENSION_COMMAND_TOKEN||'';return !!b&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}
+function authorized(req){
+ const bearer=(req.headers.authorization||'').replace(/^Bearer /i,'');
+ const staticToken=process.env.EXTENSION_COMMAND_TOKEN||'';
+ if(staticToken&&bearer.length===staticToken.length&&crypto.timingSafeEqual(Buffer.from(bearer),Buffer.from(staticToken)))return true;
+ // Scoped pairing tokens can only retrieve and acknowledge commands.
+ // They are never authorized to insert commands into the queue.
+ const paired=validOAuth(bearer,'extension');
+ return paired?.scope==='command:poll'&&(req.method==='GET'||req.method==='PATCH');
+}
 export default async function handler(req,res){
  if(!authorized(req))return reply(res,401,{error:'Unauthorized'});
  try{
