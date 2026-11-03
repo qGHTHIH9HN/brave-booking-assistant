@@ -3,6 +3,24 @@ import pg from 'pg';
 let pool;
 const database=()=>pool||(pool=new pg.Pool({connectionString:process.env.STAGING_DATABASE_URL,ssl:{rejectUnauthorized:true},connectionTimeoutMillis:8000}));
 async function codeStore(){const d=database();await d.query('CREATE TABLE IF NOT EXISTS oauth_codes (code_hash text PRIMARY KEY, expires_at timestamptz NOT NULL)');return d;}
+async function clientStore(){const d=database();await d.query('CREATE TABLE IF NOT EXISTS oauth_clients (id_hash text PRIMARY KEY, redirect_uris jsonb NOT NULL, expires_at timestamptz NOT NULL)');return d;}
+const clientHash=(s)=>crypto.createHash('sha256').update(s).digest('hex');
+async function registerClient(redirects){
+ const d=await clientStore();
+ const id='brave_'+crypto.randomBytes(32).toString('base64url');
+ await d.query("INSERT INTO oauth_clients(id_hash,redirect_uris,expires_at) VALUES($1,$2::jsonb,now()+interval '30 days')",[clientHash(id),JSON.stringify(redirects)]);
+ return id;
+}
+async function lookupClient(id){
+ if(typeof id!=='string')return null;
+ if(/^brave_[A-Za-z0-9_-]{43}$/.test(id)){
+  const d=await clientStore();
+  const row=await d.query('SELECT redirect_uris FROM oauth_clients WHERE id_hash=$1 AND expires_at>now()',[clientHash(id)]);
+  const redirects=row.rows[0]?.redirect_uris;
+  return Array.isArray(redirects)&&redirects.every(isAllowedRedirect)?{kind:'client',redirects}:null;
+ }
+ return valid(id,'client');
+}
 const origin=req=>`https://${req.headers.host}`;
 const secret=()=>process.env.MCP_BRIDGE_TOKEN||'';
 const h=(s)=>crypto.createHmac('sha256',secret()).update(s).digest('base64url');
@@ -35,15 +53,18 @@ export default async function handler(req,res){
  if(path.endsWith('/register')){
   if(req.method!=='POST')return json(res,405,{error:'method_not_allowed'});
   const a=parsedBody(req);if(!Array.isArray(a.redirect_uris)||a.redirect_uris.length<1||a.redirect_uris.length>5||!a.redirect_uris.every(isAllowedRedirect))return json(res,400,{error:'invalid_redirect_uri'});
-  const id=sign({kind:'client',redirects:a.redirect_uris,exp:Date.now()+30*86400000});
+  let id;
+  try{id=await registerClient(a.redirect_uris)}catch(e){console.error('oauth client registration storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:'client_registration_storage_unavailable'})}
   return json(res,201,{client_id:id,client_name:a.client_name||'ChatGPT MCP',redirect_uris:a.redirect_uris,token_endpoint_auth_method:'none',grant_types:['authorization_code'],response_types:['code']});
  }
  if(path.endsWith('/authorize')){
   const a=req.method==='POST'?parsedBody(req):(req.query||{});
-  const client=valid(a.client_id,'client');
+  let client;
+  try{client=await lookupClient(a.client_id)}catch(e){console.error('oauth client lookup storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:'client_lookup_storage_unavailable'})}
   const scope=String(a.scope||'brave:read').trim().split(/\s+/).filter(Boolean);
   if(scope.some(x=>!['brave:read','brave:control','brave:book'].includes(x)))return json(res,400,{error:'invalid_scope'});
-  if(!client||!client.redirects.includes(a.redirect_uri)||a.response_type!=='code'||a.code_challenge_method!=='S256'||!/^[-_a-zA-Z0-9]{43,128}$/.test(a.code_challenge||''))return json(res,400,{error:'invalid_request'});
+  if(!client){console.warn('OAuth authorization: stale or invalid client registration');return json(res,400,{error:'invalid_request',reason:'client_registration_invalid_or_expired',next_step:'Register a new ChatGPT app connection'})}
+  if(!client.redirects.includes(a.redirect_uri)||a.response_type!=='code'||a.code_challenge_method!=='S256'||!/^[-_a-zA-Z0-9]{43,128}$/.test(a.code_challenge||'')){console.warn('OAuth authorization: invalid redirect or PKCE request');return json(res,400,{error:'invalid_request',reason:'redirect_or_pkce_invalid'})}
   if(req.method==='GET'){
    res.setHeader('Content-Type','text/html; charset=utf-8');
    const fields=['client_id','redirect_uri','response_type','code_challenge','code_challenge_method','state','scope'].map(k=>'<input type="hidden" name="'+k+'" value="'+String(a[k]||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'">').join('');
@@ -64,8 +85,10 @@ export default async function handler(req,res){
  }
  if(path.endsWith('/token')){
   if(req.method!=='POST')return json(res,405,{error:'method_not_allowed'});
-  const a=parsedBody(req),code=valid(a.code,'code'),client=valid(a.client_id,'client');
-  if(a.grant_type!=='authorization_code'||!code||!client||code.client!==a.client_id||code.redirect!==a.redirect_uri)return json(res,400,{error:'invalid_grant'});
+  const a=parsedBody(req),code=valid(a.code,'code');
+  let client;
+  try{client=await lookupClient(a.client_id)}catch(e){console.error('oauth client token lookup',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:'client_lookup_storage_unavailable'})}
+  if(a.grant_type!=='authorization_code'||!code||!client||!client.redirects.includes(a.redirect_uri)||code.client!==a.client_id||code.redirect!==a.redirect_uri)return json(res,400,{error:'invalid_grant'});
   const digest=crypto.createHash('sha256').update(String(a.code_verifier||'')).digest('base64url');
   if(digest!==code.challenge)return json(res,400,{error:'invalid_grant'});
   try{const d=await codeStore();const consumed=await d.query('DELETE FROM oauth_codes WHERE code_hash=$1 AND expires_at>now() RETURNING code_hash',[crypto.createHash('sha256').update(a.code).digest('hex')]);if(!consumed.rowCount)return json(res,400,{error:'invalid_grant'});}catch(e){console.error('oauth code consume',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:e.code==='28P01'?'staging_database_credentials_invalid':e.code==='28000'?'staging_database_endpoint_unavailable':'staging_database_unavailable'});}
