@@ -48,6 +48,11 @@ export default async function handler(req,res){
    return reply(res,201,{command:r.rows[0]});
   }
   if(req.method==='GET'){
+   // Non-destructive connectivity probe: do not consume any queued command.
+   if(String(req.query?.health||'')==='1'){
+    const r=await db().query("SELECT COUNT(*)::integer AS pending FROM extension_commands WHERE status='pending'");
+    return reply(res,200,{service:'ready',queue_pending:r.rows[0]?.pending??0,commands_supported:true});
+   }
    if(req.query?.id){
     if(!/^\d+$/.test(String(req.query.id)))return reply(res,400,{error:'Invalid id'});
     const r=await db().query('SELECT id,action,status,result,created_at,finished_at FROM extension_commands WHERE id=$1',[req.query.id]);
