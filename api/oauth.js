@@ -11,6 +11,17 @@ const unb=(s)=>JSON.parse(Buffer.from(s,'base64url').toString());
 export const valid=(s,kind)=>{if(!secret()||!s)return null;const parts=s.split('.');if(parts.length!==2)return null;const expected=h(parts[0]);if(parts[1].length!==expected.length||!crypto.timingSafeEqual(Buffer.from(parts[1]),Buffer.from(expected)))return null;try{const p=unb(parts[0]);return p.kind===kind&&p.exp>Date.now()?p:null}catch{return null}};
 export const sign=(p)=>{const s=b(p);return s+'.'+h(s)};
 const json=(res,status,data)=>res.status(status).json(data);
+function parsedBody(req){
+ const body=req.body;
+ if(body&&typeof body==='object'&&!Buffer.isBuffer(body)&&!Array.isArray(body))return body;
+ if(body===undefined||body===null)return {};
+ const value=Buffer.isBuffer(body)?body.toString('utf8'):String(body);
+ if(value.length>16384)return {};
+ try{
+  if(String(req.headers['content-type']||'').includes('application/json'))return JSON.parse(value);
+  return Object.fromEntries(new URLSearchParams(value));
+ }catch{return {}}
+}
 const isAllowedRedirect=(u)=>{try{const x=new URL(u);return x.protocol==='https:'&&!x.username&&!x.password&&x.hash===''||x.protocol==='http:'&&['localhost','127.0.0.1'].includes(x.hostname)}catch{return false}};
 export default async function handler(req,res){
  res.setHeader('Cache-Control','no-store');
@@ -23,12 +34,12 @@ export default async function handler(req,res){
  if(path.endsWith('/.well-known/oauth-authorization-server'))return json(res,200,{issuer:base,authorization_endpoint:base+'/api/oauth/authorize',token_endpoint:base+'/api/oauth/token',registration_endpoint:base+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['brave:read','brave:control','brave:book']});
  if(path.endsWith('/register')){
   if(req.method!=='POST')return json(res,405,{error:'method_not_allowed'});
-  const a=req.body||{};if(!Array.isArray(a.redirect_uris)||a.redirect_uris.length<1||a.redirect_uris.length>5||!a.redirect_uris.every(isAllowedRedirect))return json(res,400,{error:'invalid_redirect_uri'});
+  const a=parsedBody(req);if(!Array.isArray(a.redirect_uris)||a.redirect_uris.length<1||a.redirect_uris.length>5||!a.redirect_uris.every(isAllowedRedirect))return json(res,400,{error:'invalid_redirect_uri'});
   const id=sign({kind:'client',redirects:a.redirect_uris,exp:Date.now()+30*86400000});
   return json(res,201,{client_id:id,client_name:a.client_name||'ChatGPT MCP',redirect_uris:a.redirect_uris,token_endpoint_auth_method:'none',grant_types:['authorization_code'],response_types:['code']});
  }
  if(path.endsWith('/authorize')){
-  const a=req.method==='POST'?req.body:req.query;
+  const a=req.method==='POST'?parsedBody(req):(req.query||{});
   const client=valid(a.client_id,'client');
   const scope=String(a.scope||'brave:read').trim().split(/\s+/).filter(Boolean);
   if(scope.some(x=>!['brave:read','brave:control','brave:book'].includes(x)))return json(res,400,{error:'invalid_scope'});
@@ -36,17 +47,24 @@ export default async function handler(req,res){
   if(req.method==='GET'){
    res.setHeader('Content-Type','text/html; charset=utf-8');
    const fields=['client_id','redirect_uri','response_type','code_challenge','code_challenge_method','state','scope'].map(k=>'<input type="hidden" name="'+k+'" value="'+String(a[k]||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'">').join('');
-   return res.status(200).send('<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Brave Booking Authorization</title></head><body style="font:16px system-ui;max-width:460px;margin:8vh auto;padding:20px"><h2>Authorize Brave Booking Assistant</h2><p>Grant only the requested scopes: read to inspect approved pages, control to navigate and interact after local 10-minute authorization, and book for reservation operations. Booking confirmation requires separate approval in the Brave extension.</p><form method="post">'+fields+'<label>Enter your private MCP bridge token <input name="owner_token" type="password" required autocomplete="off" style="display:block;width:100%;padding:10px;margin:12px 0"></label><button type="submit">Authorize</button></form></body></html>');
+   return res.status(200).send('<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Brave Booking Authorization</title></head><body style="font:16px system-ui;max-width:460px;margin:8vh auto;padding:20px"><h2>Authorize Brave Booking Assistant</h2><p>Grant only the requested scopes: read to inspect approved pages, control to navigate and interact after local 10-minute authorization, and book for reservation operations. Booking confirmation requires separate approval in the Brave extension.</p><form method="post" enctype="application/x-www-form-urlencoded">'+fields+'<label>Enter your private MCP bridge token <input name="owner_token" type="password" required autocomplete="off" style="display:block;width:100%;padding:10px;margin:12px 0"></label><button type="submit">Authorize</button></form></body></html>');
   }
-  const got=String(a.owner_token||''),expected=secret();
-  if(got.length!==expected.length||!crypto.timingSafeEqual(Buffer.from(got),Buffer.from(expected)))return json(res,403,{error:'access_denied'});
+  if(typeof a.owner_token!=='string'||!a.owner_token){
+   console.warn('OAuth form missing owner_token; bodyType='+typeof req.body+'; contentType='+String(req.headers['content-type']||'unknown').split(';')[0]);
+   return json(res,400,{error:'invalid_request',reason:'missing_owner_token'});
+  }
+  const got=Buffer.from(a.owner_token,'utf8'),expected=Buffer.from(secret(),'utf8');
+  if(got.length!==expected.length||!crypto.timingSafeEqual(got,expected)){
+   console.warn('OAuth authorization rejected: credential mismatch');
+   return json(res,403,{error:'access_denied'});
+  }
   const code=sign({kind:'code',client:a.client_id,redirect:a.redirect_uri,challenge:a.code_challenge,scope:scope.join(' '),exp:Date.now()+120000,nonce:crypto.randomUUID()});
   try{const d=await codeStore();await d.query('INSERT INTO oauth_codes(code_hash,expires_at) VALUES ($1,now()+interval \'2 minutes\')',[crypto.createHash('sha256').update(code).digest('hex')]);}catch(e){console.error('oauth code storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:e.code==='28P01'?'staging_database_credentials_invalid':e.code==='28000'?'staging_database_endpoint_unavailable':'staging_database_unavailable'});}
   const u=new URL(a.redirect_uri);u.searchParams.set('code',code);if(a.state)u.searchParams.set('state',a.state);return res.redirect(302,u.toString());
  }
  if(path.endsWith('/token')){
   if(req.method!=='POST')return json(res,405,{error:'method_not_allowed'});
-  const a=req.body||{},code=valid(a.code,'code'),client=valid(a.client_id,'client');
+  const a=parsedBody(req),code=valid(a.code,'code'),client=valid(a.client_id,'client');
   if(a.grant_type!=='authorization_code'||!code||!client||code.client!==a.client_id||code.redirect!==a.redirect_uri)return json(res,400,{error:'invalid_grant'});
   const digest=crypto.createHash('sha256').update(String(a.code_verifier||'')).digest('base64url');
   if(digest!==code.challenge)return json(res,400,{error:'invalid_grant'});
