@@ -12,13 +12,11 @@ async function registerClient(redirects){
  return id;
 }
 async function lookupClient(id){
- if(typeof id!=='string')return null;
- if(/^brave_[A-Za-z0-9_-]{43}$/.test(id)){
-  const d=await clientStore();
-  const row=await d.query('SELECT redirect_uris FROM oauth_clients WHERE id_hash=$1 AND expires_at>now()',[clientHash(id)]);
-  const redirects=row.rows[0]?.redirect_uris;
-  return Array.isArray(redirects)&&redirects.every(isAllowedRedirect)?{kind:'client',redirects}:null;
- }
+ if(typeof id!=='string'||id.length<1||id.length>4096)return null;
+ const d=await clientStore();
+ const row=await d.query('SELECT redirect_uris FROM oauth_clients WHERE id_hash=$1 AND expires_at>now()',[clientHash(id)]);
+ const redirects=row.rows[0]?.redirect_uris;
+ if(Array.isArray(redirects)&&redirects.every(isAllowedRedirect))return {kind:'client',redirects};
  return valid(id,'client');
 }
 const origin=req=>`https://${req.headers.host}`;
@@ -41,6 +39,21 @@ function parsedBody(req){
  }catch{return {}}
 }
 const isAllowedRedirect=(u)=>{try{const x=new URL(u);return x.protocol==='https:'&&!x.username&&!x.password&&x.hash===''||x.protocol==='http:'&&['localhost','127.0.0.1'].includes(x.hostname)}catch{return false}};
+const isChatGPTCallback=(u)=>{try{
+ const x=new URL(u);
+ return x.origin==='https://chatgpt.com'&&!x.username&&!x.password&&!x.search&&!x.hash&&
+   (x.pathname==='/connector_platform_oauth_redirect'||/^\/connector\/oauth\/[A-Za-z0-9_-]{1,256}$/.test(x.pathname));
+}catch{return false}};
+function legacyChatGPTClient(id,redirect){
+ // Recovered claim data are untrusted. Only a successful owner-token challenge can persist this registration.
+ if(typeof id!=='string'||id.length>4096||!isChatGPTCallback(redirect)||!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(id))return null;
+ try{
+  const p=unb(id.split('.')[0]),now=Date.now();
+  if(p.kind!=='client'||!Number.isFinite(p.exp)||p.exp<=now||p.exp>now+32*86400000)return null;
+  if(!Array.isArray(p.redirects)||p.redirects.length<1||p.redirects.length>5||!p.redirects.every(isChatGPTCallback)||!p.redirects.includes(redirect))return null;
+  return {kind:'client',redirects:[redirect]};
+ }catch{return null}
+}
 export default async function handler(req,res){
  res.setHeader('Cache-Control','no-store');
  if(process.env.VERCEL_ENV==='production')return json(res,404,{error:'not_found'});
@@ -63,8 +76,10 @@ export default async function handler(req,res){
   try{client=await lookupClient(a.client_id)}catch(e){console.error('oauth client lookup storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:'client_lookup_storage_unavailable'})}
   const scope=String(a.scope||'brave:read').trim().split(/\s+/).filter(Boolean);
   if(scope.some(x=>!['brave:read','brave:control','brave:book'].includes(x)))return json(res,400,{error:'invalid_scope'});
-  if(!client){console.warn('OAuth authorization: stale or invalid client registration');return json(res,400,{error:'invalid_request',reason:'client_registration_invalid_or_expired',next_step:'Register a new ChatGPT app connection'})}
-  if(!client.redirects.includes(a.redirect_uri)||a.response_type!=='code'||a.code_challenge_method!=='S256'||!/^[-_a-zA-Z0-9]{43,128}$/.test(a.code_challenge||'')){console.warn('OAuth authorization: invalid redirect or PKCE request');return json(res,400,{error:'invalid_request',reason:'redirect_or_pkce_invalid'})}
+  const legacyPending=client?null:legacyChatGPTClient(a.client_id,a.redirect_uri);
+  const acceptedClient=client||legacyPending;
+  if(!acceptedClient){console.warn('OAuth authorization: stale or invalid client registration');return json(res,400,{error:'invalid_request',reason:'client_registration_invalid_or_expired',next_step:'Register a new ChatGPT app connection'})}
+  if(!acceptedClient.redirects.includes(a.redirect_uri)||a.response_type!=='code'||a.code_challenge_method!=='S256'||!/^[-_a-zA-Z0-9]{43,128}$/.test(a.code_challenge||'')){console.warn('OAuth authorization: invalid redirect or PKCE request');return json(res,400,{error:'invalid_request',reason:'redirect_or_pkce_invalid'})}
   if(req.method==='GET'){
    res.setHeader('Content-Type','text/html; charset=utf-8');
    const fields=['client_id','redirect_uri','response_type','code_challenge','code_challenge_method','state','scope'].map(k=>'<input type="hidden" name="'+k+'" value="'+String(a[k]||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')+'">').join('');
@@ -78,6 +93,13 @@ export default async function handler(req,res){
   if(got.length!==expected.length||!crypto.timingSafeEqual(got,expected)){
    console.warn('OAuth authorization rejected: credential mismatch');
    return json(res,403,{error:'access_denied'});
+  }
+  if(legacyPending){
+   try{
+    const d=await clientStore();
+    await d.query("INSERT INTO oauth_clients(id_hash,redirect_uris,expires_at) VALUES($1,$2::jsonb,now()+interval '30 days') ON CONFLICT (id_hash) DO NOTHING",[clientHash(a.client_id),JSON.stringify([a.redirect_uri])]);
+    console.info('OAuth legacy ChatGPT client registered after owner authorization');
+   }catch(e){console.error('OAuth legacy migration storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:'legacy_client_storage_unavailable'})}
   }
   const code=sign({kind:'code',client:a.client_id,redirect:a.redirect_uri,challenge:a.code_challenge,scope:scope.join(' '),exp:Date.now()+120000,nonce:crypto.randomUUID()});
   try{const d=await codeStore();await d.query('INSERT INTO oauth_codes(code_hash,expires_at) VALUES ($1,now()+interval \'2 minutes\')',[crypto.createHash('sha256').update(code).digest('hex')]);}catch(e){console.error('oauth code storage',e.code||e.name);return json(res,503,{error:'temporarily_unavailable',reason:e.code==='28P01'?'staging_database_credentials_invalid':e.code==='28000'?'staging_database_endpoint_unavailable':'staging_database_unavailable'});}
