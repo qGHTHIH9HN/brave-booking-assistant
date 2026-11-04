@@ -53,7 +53,7 @@ export default async function handler(req,res){
     if(action==='book_now'){
       if(payload.authorization!=='submit_this_booking'||!Number.isSafeInteger(payload.authorizedAt)||payload.authorizedAt>Date.now()+2*60*1000||Date.now()-payload.authorizedAt>20*60*1000)
         return reply(res,400,{error:'Book now needs a fresh explicit submission authorization'});
-      if(typeof payload.maxCancellationCharge!=='number'||!Number.isFinite(payload.maxCancellationCharge)||payload.maxCancellationCharge<0||payload.maxCancellationCharge>100000||!['EUR','MAD','USD','GBP'].includes(payload.cancellationCurrency))
+      if(typeof payload.maxCancellationCharge!=='number'||!Number.isFinite(payload.maxCancellationCharge)||payload.maxCancellationCharge<0||payload.maxCancellationCharge>100000||!['EUR','MAD','USD','GBP','AUD'].includes(payload.cancellationCurrency))
         return reply(res,400,{error:'Book now needs a cancellation ceiling and currency'});
       if(!payload.roomType.trim())return reply(res,400,{error:'Book now needs an exact room type'});
     }
