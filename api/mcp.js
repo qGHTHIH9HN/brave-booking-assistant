@@ -31,8 +31,8 @@ const tool=(name,description,properties,required=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
  securitySchemes:[{type:'oauth2',scopes:toolScopes[name]||['brave:read']}]
 });
-const scopeChallenge=(res,id,scope)=>{
- const challenge='Bearer resource_metadata="https://'+res.req.headers.host+'/.well-known/oauth-protected-resource", scope="'+scope+'", error="insufficient_scope", error_description="Authorize Brave Booking Assistant for '+scope+'"';
+const scopeChallenge=(req,res,id,scope)=>{
+ const challenge='Bearer resource_metadata="https://'+req.headers.host+'/.well-known/oauth-protected-resource", scope="'+scope+'", error="insufficient_scope", error_description="Authorize Brave Booking Assistant for '+scope+'"';
  res.setHeader('WWW-Authenticate',challenge);
  return send(res,200,ok(id,{isError:true,content:[{type:'text',text:'Additional OAuth consent required for '+scope+'. Please reauthorize this app with the requested scope.'}],_meta:{'mcp/www_authenticate':[challenge]}}));
 };
@@ -78,14 +78,14 @@ export default async function handler(req,res){
   if(name==='send_browser_command'){
    const scope=String(client?.scope||'').split(' ');
    const isRead=READ_ACTIONS.has(args.action);
-   if(!ownerAllowed&&!scope.includes(isRead?'brave:read':'brave:control')&&!(isRead&&scope.includes('brave:control')))return scopeChallenge(res,m.id,isRead?'brave:read':'brave:control');
+   if(!ownerAllowed&&!scope.includes(isRead?'brave:read':'brave:control')&&!(isRead&&scope.includes('brave:control')))return scopeChallenge(req,res,m.id,isRead?'brave:read':'brave:control');
    let c;try{c=validateBrowserCommand(args)}catch(e){return send(res,200,err(m.id,-32602,e.message));}
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[c.action,JSON.stringify(c.payload)]);
    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
   }
   if(name==='send_booking_command'||name==='prepare_booking'){
    if(name==='prepare_booking'&&Object.keys(rawArgs).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex'].includes(k)))return send(res,200,err(m.id,-32602,'Only approved stay fields and local guest index allowed'));
-   if(!ownerAllowed&&!String(client?.scope||'').split(' ').includes('brave:book'))return scopeChallenge(res,m.id,'brave:book');
+   if(!ownerAllowed&&!String(client?.scope||'').split(' ').includes('brave:book'))return scopeChallenge(req,res,m.id,'brave:book');
    if(!bookingCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported booking action'));
    let payload={};
    if(args.action==='start_booking'){
