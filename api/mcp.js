@@ -19,7 +19,23 @@ function auth(req){
 const send=(res,status,body)=>{res.setHeader('Cache-Control','no-store');res.setHeader('Content-Type','application/json');return res.status(status).json(body)};
 const err=(id,code,message)=>({jsonrpc:'2.0',id,error:{code,message}});
 const ok=(id,result)=>({jsonrpc:'2.0',id,result});
-const tool=(name,description,properties,required=[])=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
+// OAuth scopes are advertised per tool so ChatGPT can request additional consent.
+const toolScopes={
+ send_safe_command:['brave:read'],
+ get_command_status:['brave:read'],
+ send_browser_command:['brave:control'],
+ send_booking_command:['brave:book'],
+ prepare_booking:['brave:book']
+};
+const tool=(name,description,properties,required=[])=>({
+ name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
+ securitySchemes:[{type:'oauth2',scopes:toolScopes[name]||['brave:read']}]
+});
+const scopeChallenge=(res,id,scope)=>{
+ const challenge='Bearer resource_metadata="https://'+res.req.headers.host+'/.well-known/oauth-protected-resource", scope="'+scope+'", error="insufficient_scope", error_description="Authorize Brave Booking Assistant for '+scope+'"';
+ res.setHeader('WWW-Authenticate',challenge);
+ return send(res,200,ok(id,{isError:true,content:[{type:'text',text:'Additional OAuth consent required for '+scope+'. Please reauthorize this app with the requested scope.'}],_meta:{'mcp/www_authenticate':[challenge]}}));
+};
 const tools=[
  tool('send_safe_command','Queue a read-only browser command; never books or pays.',{action:{type:'string',enum:['open_listing','inspect_active']},url:{type:'string',description:'Required only for open_listing; Booking.com Morocco hotel listing URL.'}},['action']),
  tool('send_booking_command','Queue Booking.com booking steps in Brave. start_booking stops at final review; confirm_booking requires separate prior local approval.',{action:{type:'string',enum:['start_booking','resume_booking','inspect_booking','confirm_booking']},url:{type:'string',description:'Booking.com Morocco listing URL'},checkin:{type:'string',description:'YYYY-MM-DD'},checkout:{type:'string',description:'YYYY-MM-DD'},adults:{type:'integer',minimum:1,maximum:8},roomType:{type:'string',description:'Preferred room type e.g. Tent'},maxTotal:{type:'number',exclusiveMinimum:0},currency:{type:'string',enum:['EUR','MAD','USD','GBP']},guestIndex:{type:'integer',minimum:1,maximum:1000,description:'1-based guest position saved locally in Brave; do not send guest names or emails'}},['action']),
@@ -35,7 +51,10 @@ export default async function handler(req,res){
  if(process.env.VERCEL_ENV==='production')return send(res,404,{error:'Not available in production'});
  const bearer=(req.headers.authorization||'').replace(/^Bearer /i,'');
  const ownerAllowed=auth(req),client=validOAuth(bearer,'access');
- if(!ownerAllowed&&!client){res.setHeader('WWW-Authenticate','Bearer realm="Brave Booking Assistant"');return send(res,401,{error:'Unauthorized',message:'A valid scoped access token is required'});}
+ if(!ownerAllowed&&!client){
+  res.setHeader('WWW-Authenticate','Bearer realm="Brave Booking Assistant", resource_metadata="https://'+req.headers.host+'/.well-known/oauth-protected-resource", scope="brave:read", error="invalid_token", error_description="Authorize Brave Booking Assistant"');
+  return send(res,401,{error:'Unauthorized',message:'A valid scoped access token is required'});
+ }
  if(req.method==='GET')return send(res,200,{name:'Brave Booking Assistant MCP Preview',version:'0.2.0',readOnly:false});
  if(req.method!=='POST')return send(res,405,{error:'Method not allowed'});
  let m;try{m=req.body;if(typeof m==='string')m=JSON.parse(m)}catch{return send(res,400,{error:'Invalid JSON'})}
@@ -59,14 +78,14 @@ export default async function handler(req,res){
   if(name==='send_browser_command'){
    const scope=String(client?.scope||'').split(' ');
    const isRead=READ_ACTIONS.has(args.action);
-   if(!ownerAllowed&&!scope.includes(isRead?'brave:read':'brave:control')&&!(isRead&&scope.includes('brave:control')))return send(res,200,err(m.id,-32003,isRead?'Browsing read scope required':'Brave browser control scope required; reconnect and authorize this access'));
+   if(!ownerAllowed&&!scope.includes(isRead?'brave:read':'brave:control')&&!(isRead&&scope.includes('brave:control')))return scopeChallenge(res,m.id,isRead?'brave:read':'brave:control');
    let c;try{c=validateBrowserCommand(args)}catch(e){return send(res,200,err(m.id,-32602,e.message));}
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[c.action,JSON.stringify(c.payload)]);
    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
   }
   if(name==='send_booking_command'||name==='prepare_booking'){
    if(name==='prepare_booking'&&Object.keys(rawArgs).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex'].includes(k)))return send(res,200,err(m.id,-32602,'Only approved stay fields and local guest index allowed'));
-   if(!ownerAllowed&&!String(client?.scope||'').split(' ').includes('brave:book'))return send(res,200,err(m.id,-32003,'Booking scope required; reconnect and authorize booking access'));
+   if(!ownerAllowed&&!String(client?.scope||'').split(' ').includes('brave:book'))return scopeChallenge(res,m.id,'brave:book');
    if(!bookingCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported booking action'));
    let payload={};
    if(args.action==='start_booking'){
