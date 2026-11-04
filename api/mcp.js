@@ -22,7 +22,8 @@ const ok=(id,result)=>({jsonrpc:'2.0',id,result});
 const tool=(name,description,properties,required=[])=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
 const tools=[
  tool('send_safe_command','Queue a read-only browser command; never books or pays.',{action:{type:'string',enum:['open_listing','inspect_active']},url:{type:'string',description:'Required only for open_listing; Booking.com Morocco hotel listing URL.'}},['action']),
- tool('send_booking_command','Queue a Booking.com reservation step in the user\'s Brave browser. start_booking navigates to guest details and final review. confirm_booking submits only after matching approval made locally in Brave.',{action:{type:'string',enum:['start_booking','resume_booking','inspect_booking','confirm_booking']},url:{type:'string',description:'Approved Booking.com Morocco hotel listing URL for start_booking'},checkin:{type:'string',description:'YYYY-MM-DD for start_booking'},checkout:{type:'string',description:'YYYY-MM-DD for start_booking'},adults:{type:'integer',minimum:1,maximum:8},roomType:{type:'string',description:'Preferred exact room type; use Tent for this case'},maxTotal:{type:'number',exclusiveMinimum:0},currency:{type:'string',enum:['EUR','MAD','USD','GBP']}},['action']),
+ tool('send_booking_command','Queue Booking.com booking steps in Brave. start_booking stops at final review; confirm_booking requires separate prior local approval.',{action:{type:'string',enum:['start_booking','resume_booking','inspect_booking','confirm_booking']},url:{type:'string',description:'Booking.com Morocco listing URL'},checkin:{type:'string',description:'YYYY-MM-DD'},checkout:{type:'string',description:'YYYY-MM-DD'},adults:{type:'integer',minimum:1,maximum:8},roomType:{type:'string',description:'Preferred room type e.g. Tent'},maxTotal:{type:'number',exclusiveMinimum:0},currency:{type:'string',enum:['EUR','MAD','USD','GBP']},guestIndex:{type:'integer',minimum:1,maximum:1000,description:'1-based guest position saved locally in Brave; do not send guest names or emails'}},['action']),
+ tool('prepare_booking','Start a single guided Booking.com reservation workflow: open the property, select requested stay and room, use locally saved authorized guest details, and STOP for final review. If guest details are absent, pause at the guest form. No financial submission is authorized by this tool.',{url:{type:'string',description:'Booking.com Morocco hotel listing URL'},checkin:{type:'string',description:'YYYY-MM-DD'},checkout:{type:'string',description:'YYYY-MM-DD'},adults:{type:'integer',minimum:1,maximum:8},roomType:{type:'string',description:'Requested room type e.g. Tent or empty string for any'},maxTotal:{type:'number',exclusiveMinimum:0},currency:{type:'string',enum:['EUR','MAD','USD','GBP']},guestIndex:{type:'integer',minimum:1,maximum:1000,description:'Optional 1-based guest index saved locally in Brave; no PII uploaded'}},['url','checkin','checkout','adults','roomType','maxTotal','currency']),
  tool('send_browser_command','Control approved Brave browser sites only. Read actions require brave:read; navigation, scrolling, clicking, and text search require brave:control and a temporary approval in the local extension. Never sends payments or bookings.',{action:{type:'string',enum:[...BROWSER_ACTIONS]},url:{type:'string',description:'HTTPS URL for browser_open_url; host must be locally approved in Brave'},selector:{type:'string',description:'CSS selector for click or type_text'},text:{type:'string',description:'Short nonsensitive text, only for browser_type_text'},direction:{type:'string',enum:['up','down']},pixels:{type:'integer',minimum:1,maximum:1200}},['action']),
  tool('get_command_status','Read status and result of an existing command.',{id:{type:'integer',minimum:1}},['id'])
 ];
@@ -44,7 +45,9 @@ export default async function handler(req,res){
  if(m.method==='ping')return send(res,200,ok(m.id,{}));
  if(m.method==='tools/list')return send(res,200,ok(m.id,{tools}));
  if(m.method!=='tools/call')return send(res,200,err(m.id,-32601,'Method not found'));
- const name=m.params?.name,args=m.params?.arguments||{};
+ const name=m.params?.name,rawArgs=m.params?.arguments||{};
+ // prepare_booking is always a preparation action, never final submission.
+ const args=name==='prepare_booking'?{...rawArgs,action:'start_booking'}:rawArgs;
  try{
   if(name==='send_safe_command'){
    if(!safeCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported read-only action'));
@@ -61,7 +64,8 @@ export default async function handler(req,res){
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[c.action,JSON.stringify(c.payload)]);
    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
   }
-  if(name==='send_booking_command'){
+  if(name==='send_booking_command'||name==='prepare_booking'){
+   if(name==='prepare_booking'&&Object.keys(rawArgs).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex'].includes(k)))return send(res,200,err(m.id,-32602,'Only approved stay fields and local guest index allowed'));
    if(!ownerAllowed&&!String(client?.scope||'').split(' ').includes('brave:book'))return send(res,200,err(m.id,-32003,'Booking scope required; reconnect and authorize booking access'));
    if(!bookingCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported booking action'));
    let payload={};
@@ -71,7 +75,10 @@ export default async function handler(req,res){
     if(!date.test(args.checkin)||!date.test(args.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return send(res,200,err(m.id,-32602,'Invalid stay dates'));
     if(!Number.isInteger(args.adults)||args.adults<1||args.adults>8||typeof args.roomType!=='string'||args.roomType.length>80)return send(res,200,err(m.id,-32602,'Invalid adults or room type'));
     if(typeof args.maxTotal!=='number'||!Number.isFinite(args.maxTotal)||args.maxTotal<=0||args.maxTotal>100000||!['EUR','MAD','USD','GBP'].includes(args.currency))return send(res,200,err(m.id,-32602,'Maximum total and currency required'));
+    if(args.guestIndex!==undefined&&(!Number.isInteger(args.guestIndex)||args.guestIndex<1||args.guestIndex>1000))return send(res,200,err(m.id,-32602,'Invalid local guest index'));
+    if(Object.keys(args).some(k=>!['action','url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex'].includes(k)))return send(res,200,err(m.id,-32602,'Guest information must stay local in Brave'));
     payload={url:args.url,checkin:args.checkin,checkout:args.checkout,adults:args.adults,roomType:args.roomType,maxTotal:args.maxTotal,currency:args.currency};
+    if(args.guestIndex!==undefined)payload.guestIndex=args.guestIndex;
    }else if(Object.keys(args).some(k=>k!=='action'))return send(res,200,err(m.id,-32602,'No extra fields permitted'));
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[args.action,JSON.stringify(payload)]);
    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
