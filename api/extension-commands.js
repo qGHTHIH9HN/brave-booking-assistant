@@ -17,7 +17,7 @@ function db(){
 
  return pool;
 }
-const allowed=new Set(['open_listing','inspect_active','start_booking','resume_booking','inspect_booking','confirm_booking',...BROWSER_ACTIONS]);
+const allowed=new Set(['open_listing','inspect_active','start_booking','book_now','resume_booking','inspect_booking','confirm_booking',...BROWSER_ACTIONS]);
 // Separate scoped token; intentionally do not fall back to dashboard admin credentials.
 const reply=(res,code,body)=>{res.setHeader('Cache-Control','no-store');return res.status(code).json(body)};
 function authorized(req){
@@ -40,7 +40,7 @@ export default async function handler(req,res){
     if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\/hotel\/ma\/[a-z0-9-]+\.en-gb\.html$/.test(u.pathname))return reply(res,400,{error:'Only Booking.com Morocco listings allowed'});
    }
    if(JSON.stringify(payload).length>2500)return reply(res,400,{error:'Command too large'});
-   if(action==='start_booking'){
+   if(action==='start_booking'||action==='book_now'){
     let u;try{u=new URL(payload.url)}catch{return reply(res,400,{error:'Invalid hotel URL'})}
     if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\/hotel\/ma\/[a-z0-9-]+\.en-gb\.html$/.test(u.pathname)||u.username||u.password)return reply(res,400,{error:'Only Morocco hotel listing URLs allowed'});
     const dt=/^\d{4}-\d{2}-\d{2}$/;
@@ -49,7 +49,16 @@ export default async function handler(req,res){
     if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
     if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
     if(payload.guestIndex!==undefined&&(!Number.isInteger(payload.guestIndex)||payload.guestIndex<1||payload.guestIndex>1000))return reply(res,400,{error:'Guest selection index must be 1–1000'});
-    if(Object.keys(payload).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex'].includes(k)))return reply(res,400,{error:'Unexpected field; guest identities must remain local to Brave'});
+    const safeFields=['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex'];
+    if(action==='book_now'){
+      if(payload.authorization!=='submit_this_booking'||!Number.isSafeInteger(payload.authorizedAt)||payload.authorizedAt>Date.now()+2*60*1000||Date.now()-payload.authorizedAt>20*60*1000)
+        return reply(res,400,{error:'Book now needs a fresh explicit submission authorization'});
+      if(typeof payload.maxCancellationCharge!=='number'||!Number.isFinite(payload.maxCancellationCharge)||payload.maxCancellationCharge<0||payload.maxCancellationCharge>100000||!['EUR','MAD','USD','GBP'].includes(payload.cancellationCurrency))
+        return reply(res,400,{error:'Book now needs a cancellation ceiling and currency'});
+      if(!payload.roomType.trim())return reply(res,400,{error:'Book now needs an exact room type'});
+    }
+    const extra=action==='book_now'?['authorization','authorizedAt','maxCancellationCharge','cancellationCurrency']:[];
+    if(Object.keys(payload).some(k=>![...safeFields,...extra].includes(k)))return reply(res,400,{error:'Unexpected field; guest identities must remain local to Brave'});
    }else if(BROWSER_ACTIONS.includes(action)){
     let validated;try{validated=validateBrowserCommand({action,...payload})}catch(e){return reply(res,400,{error:e.message})}
     if(JSON.stringify(validated.payload)!==JSON.stringify(payload))return reply(res,400,{error:'Unexpected browser payload shape'});
