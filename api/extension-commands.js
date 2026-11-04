@@ -48,7 +48,8 @@ export default async function handler(req,res){
     if(!dt.test(payload.checkin)||!dt.test(payload.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return reply(res,400,{error:'Invalid stay dates'});
     if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
     if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
-    if(Object.keys(payload).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency'].includes(k)))return reply(res,400,{error:'Unexpected field; do not upload guest identities'});
+    if(payload.guestIndex!==undefined&&(!Number.isInteger(payload.guestIndex)||payload.guestIndex<1||payload.guestIndex>1000))return reply(res,400,{error:'Guest selection index must be 1–1000'});
+    if(Object.keys(payload).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex'].includes(k)))return reply(res,400,{error:'Unexpected field; guest identities must remain local to Brave'});
    }else if(BROWSER_ACTIONS.includes(action)){
     let validated;try{validated=validateBrowserCommand({action,...payload})}catch(e){return reply(res,400,{error:e.message})}
     if(JSON.stringify(validated.payload)!==JSON.stringify(payload))return reply(res,400,{error:'Unexpected browser payload shape'});
