@@ -57,7 +57,7 @@ export default async function handler(req,res){
         return reply(res,400,{error:'Book now needs a cancellation ceiling and currency'});
       if(!payload.roomType.trim())return reply(res,400,{error:'Book now needs an exact room type'});
     }
-    if(payload.vpnCountry!==undefined&&(typeof payload.vpnCountry!=='string'||!/^[A-Z]{2}$/.test(payload.vpnCountry)))return reply(res,400,{error:'VPN country must be a two-letter ISO code'});
+    if(payload.vpnCountry!==undefined&&(typeof payload.vpnCountry!=='string'||!/^(?:[A-Z]{2}|AUTO)$/.test(payload.vpnCountry)))return reply(res,400,{error:'VPN must be AUTO or a two-letter ISO country code'});
     const extra=action==='book_now'?['authorization','authorizedAt','maxCancellationCharge','cancellationCurrency']:[];
     if(Object.keys(payload).some(k=>![...safeFields,...extra].includes(k)))return reply(res,400,{error:'Unexpected field; guest identities must remain local to Brave'});
    }else if(BROWSER_ACTIONS.includes(action)){
