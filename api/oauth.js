@@ -61,7 +61,7 @@ export default async function handler(req,res){
  const route=req.query?.route||'';
  const path=route==='metadata'? '/.well-known/oauth-authorization-server':route==='resource'? '/.well-known/oauth-protected-resource': '/api/oauth/'+route;
  const base=origin(req);
- if(path.endsWith('/.well-known/oauth-protected-resource'))return json(res,200,{resource:base+'/api/mcp',authorization_servers:[base]});
+ if(path.endsWith('/.well-known/oauth-protected-resource'))return json(res,200,{resource:base+'/api/mcp',authorization_servers:[base],scopes_supported:['brave:read','brave:control','brave:book']});
  if(path.endsWith('/.well-known/oauth-authorization-server'))return json(res,200,{issuer:base,authorization_endpoint:base+'/api/oauth/authorize',token_endpoint:base+'/api/oauth/token',registration_endpoint:base+'/api/oauth/register',response_types_supported:['code'],grant_types_supported:['authorization_code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],scopes_supported:['brave:read','brave:control','brave:book']});
  if(path.endsWith('/register')){
   if(req.method!=='POST')return json(res,405,{error:'method_not_allowed'});
