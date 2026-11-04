@@ -49,7 +49,7 @@ export default async function handler(req,res){
     if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
     if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
     if(payload.guestIndex!==undefined&&(!Number.isInteger(payload.guestIndex)||payload.guestIndex<1||payload.guestIndex>1000))return reply(res,400,{error:'Guest selection index must be 1–1000'});
-    const safeFields=['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex','vpnCountry'];
+    const safeFields=['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex','vpnCountry','vpnCity','vpnLogicalId','vpnServerId'];
     if(action==='book_now'){
       if(payload.authorization!=='submit_this_booking'||!Number.isSafeInteger(payload.authorizedAt)||payload.authorizedAt>Date.now()+2*60*1000||Date.now()-payload.authorizedAt>20*60*1000)
         return reply(res,400,{error:'Book now needs a fresh explicit submission authorization'});
@@ -58,6 +58,10 @@ export default async function handler(req,res){
       if(!payload.roomType.trim())return reply(res,400,{error:'Book now needs an exact room type'});
     }
     if(payload.vpnCountry!==undefined&&(typeof payload.vpnCountry!=='string'||!/^(?:[A-Z]{2}|AUTO)$/.test(payload.vpnCountry)))return reply(res,400,{error:'VPN must be AUTO or a two-letter ISO country code'});
+    for(const key of ['vpnCity','vpnLogicalId','vpnServerId']){
+      if(payload[key]!==undefined&&(typeof payload[key]!=='string'||payload[key].length>120))return reply(res,400,{error:'Invalid Proton '+key});
+      if(payload[key]!==undefined&&!payload.vpnCountry)return reply(res,400,{error:'Select VPN country before specifying a Proton city or server'});
+    }
     const extra=action==='book_now'?['authorization','authorizedAt','maxCancellationCharge','cancellationCurrency']:[];
     if(Object.keys(payload).some(k=>![...safeFields,...extra].includes(k)))return reply(res,400,{error:'Unexpected field; guest identities must remain local to Brave'});
    }else if(BROWSER_ACTIONS.includes(action)){
