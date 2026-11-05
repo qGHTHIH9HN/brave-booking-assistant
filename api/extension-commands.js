@@ -47,7 +47,7 @@ export default async function handler(req,res){
     const a=new Date(String(payload.checkin)+'T00:00:00Z'),b=new Date(String(payload.checkout)+'T00:00:00Z');
     if(!dt.test(payload.checkin)||!dt.test(payload.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return reply(res,400,{error:'Invalid stay dates'});
     if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
-    if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
+    if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD','AUD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
     if(payload.guestIndex!==undefined&&(!Number.isInteger(payload.guestIndex)||payload.guestIndex<1||payload.guestIndex>1000))return reply(res,400,{error:'Guest selection index must be 1–1000'});
     const safeFields=['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex','vpnCountry','vpnCity','vpnLogicalId','vpnServerId'];
     if(action==='book_now'){
