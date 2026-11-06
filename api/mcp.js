@@ -118,44 +118,7 @@ export default async function handler(req,res){
       if(args[field]!==undefined&&args[field]!==previous[field])
        return send(res,200,err(m.id,-32602,'Requested '+field+' differs from the reviewed stay'));
     const amountPattern='([0-9]+(?:,[0-9]{3})*(?:\\.[0-9]{1,2})?)';
-    const totalMatch=new RegExp('^Total\\s+(EUR|MAD|USD|GBP|AUD)\\s+'+amountPattern+'\\s*
-   let payload={};
-   if(args.action==='start_booking'){
-    if(!validateUrl(args.url))return send(res,200,err(m.id,-32602,'Only approved Morocco hotel listing URLs allowed'));
-    const date=/^\d{4}-\d{2}-\d{2}$/,a=new Date(String(args.checkin)+'T00:00:00Z'),b=new Date(String(args.checkout)+'T00:00:00Z');
-    if(!date.test(args.checkin)||!date.test(args.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return send(res,200,err(m.id,-32602,'Invalid stay dates'));
-    if(!Number.isInteger(args.adults)||args.adults<1||args.adults>8||typeof args.roomType!=='string'||args.roomType.length>80)return send(res,200,err(m.id,-32602,'Invalid adults or room type'));
-    if(typeof args.maxTotal!=='number'||!Number.isFinite(args.maxTotal)||args.maxTotal<=0||args.maxTotal>100000||!['EUR','MAD','USD','GBP','AUD'].includes(args.currency))return send(res,200,err(m.id,-32602,'Maximum total and currency required'));
-    if(args.guestIndex!==undefined&&(!Number.isInteger(args.guestIndex)||args.guestIndex<1||args.guestIndex>1000))return send(res,200,err(m.id,-32602,'Invalid local guest index'));
-    if(args.vpnCountry!==undefined&&(typeof args.vpnCountry!=='string'||!/^(?:[A-Z]{2}|AUTO)$/.test(args.vpnCountry)))return send(res,200,err(m.id,-32602,'VPN must be AUTO or a two-letter country code (FR, DE, US, etc.)'));
-    for(const key of ['vpnCity','vpnLogicalId','vpnServerId']){
-      if(args[key]!==undefined&&(typeof args[key]!=='string'||args[key].length>120))return send(res,200,err(m.id,-32602,'Invalid requested Proton '+key));
-      if(args[key]!==undefined&&!args.vpnCountry)return send(res,200,err(m.id,-32602,'Choose vpnCountry when selecting a Proton city or server'));
-    }
-    if(name!=='book_now'&&Object.keys(args).some(k=>!['action','url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex','vpnCountry','vpnCity','vpnLogicalId','vpnServerId'].includes(k)))return send(res,200,err(m.id,-32602,'Guest information must stay local in Brave'));
-    payload={url:args.url,checkin:args.checkin,checkout:args.checkout,adults:args.adults,roomType:args.roomType,maxTotal:args.maxTotal,currency:args.currency};
-    if(args.guestIndex!==undefined)payload.guestIndex=args.guestIndex;
-    if(args.vpnCountry!==undefined)payload.vpnCountry=args.vpnCountry;
-    for(const key of ['vpnCity','vpnLogicalId','vpnServerId'])if(args[key]!==undefined)payload[key]=args[key];
-    if(name==='book_now'){
-      payload.authorization='submit_this_booking';
-      payload.authorizedAt=Date.now();
-      payload.maxCancellationCharge=args.maxCancellationCharge;
-      payload.cancellationCurrency=args.cancellationCurrency;
-    }
-   }else if(Object.keys(args).some(k=>k!=='action'))return send(res,200,err(m.id,-32602,'No extra fields permitted'));
-   const queuedAction=name==='book_now'?'book_now':args.action;
-   const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[queuedAction,JSON.stringify(payload)]);
-   return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
-  }
-  if(name==='get_command_status'){
-   if(!Number.isSafeInteger(args.id)||args.id<1)return send(res,200,err(m.id,-32602,'Invalid command id'));
-   const r=await db().query('SELECT id,action,status,result,created_at,finished_at FROM extension_commands WHERE id=$1',[args.id]);
-   return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0]||null)}]}));
-  }
-  return send(res,200,err(m.id,-32602,'Unknown tool'));
- }catch(e){console.error('MCP bridge failure',e.code||e.name);return send(res,200,err(m.id,-32603,'Command service unavailable'))}
-},'i').exec(String(view.totalHint||'').trim());
+    const totalMatch=new RegExp('^Total\\s+(EUR|MAD|USD|GBP|AUD)\\s+'+amountPattern+'\\s*$','i').exec(String(view.totalHint||'').trim());
     if(!totalMatch)return send(res,200,err(m.id,-32602,'Exact displayed price and currency must be verified before submission'));
     const totalCurrency=totalMatch[1].toUpperCase(),total=Number(totalMatch[2].replace(/,/g,''));
     if(!Number.isFinite(total)||total<=0||total>100000)return send(res,200,err(m.id,-32602,'Invalid current total'));
