@@ -93,6 +93,96 @@ export default async function handler(req,res){
    if(name==='book_now')args.action='start_booking';
    if(name==='prepare_booking'&&Object.keys(rawArgs).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex','vpnCountry','vpnCity','vpnLogicalId','vpnServerId'].includes(k)))return send(res,200,err(m.id,-32602,'Only approved stay fields and local guest index allowed'));
    if(!ownerAllowed&&!String(client?.scope||'').split(' ').includes('brave:book'))return scopeChallenge(req,res,m.id,'brave:book');
+   // Backward-compatibility bridge: older ChatGPT connections expose confirm_booking
+   // but do not expose the new book_now tool. A deliberate confirm_booking call
+   // is authorized ONLY against a fresh, inspected Booking.com final review.
+   // The extension still performs all one-shot price/date/room/VPN/guest checks.
+   if(name==='send_booking_command'&&args.action==='confirm_booking'){
+    const inspectionRow=(await db().query("SELECT id,result,finished_at FROM extension_commands WHERE action='inspect_active' AND status='completed' ORDER BY id DESC LIMIT 1")).rows[0];
+    const view=inspectionRow?.result||{};
+    if(!inspectionRow||!inspectionRow.finished_at||Date.now()-new Date(inspectionRow.finished_at).getTime()>5*60*1000||
+       view.phase!=='review'||view.pageUrl!=='https://secure.booking.com/book.html'||
+       view.blocked!==false||view.payAtProperty!==true||view.requiresCreditCard!==false||
+       !/^(?:complete booking|book with commitment to pay|confirm (?:your )?booking)$/i.test(String(view.finalButton||'').trim())||
+       view.finalTargetEvidence?.disabled!==false)
+     return send(res,200,err(m.id,-32602,'Final Booking.com review is missing, too old, already confirmed, or not safe to submit; inspect the active review first'));
+    const preparedRow=(await db().query("SELECT id,payload,created_at FROM extension_commands WHERE action='start_booking' AND id<$1 AND created_at>now()-interval '4 hours' ORDER BY id DESC LIMIT 1",[inspectionRow.id])).rows[0];
+    const previous=preparedRow?.payload||{};
+    if(!preparedRow||!validateUrl(previous.url)||!previous.checkin||!previous.checkout||
+       !Number.isInteger(previous.adults)||previous.adults<1||previous.adults>8||
+       typeof previous.roomType!=='string'||!previous.roomType.trim()||
+       previous.checkin!==view.checkin||previous.checkout!==view.checkout||
+       previous.checkin!==view.datesEvidence?.checkin||previous.checkout!==view.datesEvidence?.checkout)
+      return send(res,200,err(m.id,-32602,'Prepared stay does not match the current Booking.com checkout; do not submit'));
+    for(const field of ['url','checkin','checkout','adults','roomType','guestIndex'])
+      if(args[field]!==undefined&&args[field]!==previous[field])
+       return send(res,200,err(m.id,-32602,'Requested '+field+' differs from the reviewed stay'));
+    const amountPattern='([0-9]+(?:,[0-9]{3})*(?:\\.[0-9]{1,2})?)';
+    const totalMatch=new RegExp('^Total\\s+(EUR|MAD|USD|GBP|AUD)\\s+'+amountPattern+'\\s*
+   let payload={};
+   if(args.action==='start_booking'){
+    if(!validateUrl(args.url))return send(res,200,err(m.id,-32602,'Only approved Morocco hotel listing URLs allowed'));
+    const date=/^\d{4}-\d{2}-\d{2}$/,a=new Date(String(args.checkin)+'T00:00:00Z'),b=new Date(String(args.checkout)+'T00:00:00Z');
+    if(!date.test(args.checkin)||!date.test(args.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return send(res,200,err(m.id,-32602,'Invalid stay dates'));
+    if(!Number.isInteger(args.adults)||args.adults<1||args.adults>8||typeof args.roomType!=='string'||args.roomType.length>80)return send(res,200,err(m.id,-32602,'Invalid adults or room type'));
+    if(typeof args.maxTotal!=='number'||!Number.isFinite(args.maxTotal)||args.maxTotal<=0||args.maxTotal>100000||!['EUR','MAD','USD','GBP','AUD'].includes(args.currency))return send(res,200,err(m.id,-32602,'Maximum total and currency required'));
+    if(args.guestIndex!==undefined&&(!Number.isInteger(args.guestIndex)||args.guestIndex<1||args.guestIndex>1000))return send(res,200,err(m.id,-32602,'Invalid local guest index'));
+    if(args.vpnCountry!==undefined&&(typeof args.vpnCountry!=='string'||!/^(?:[A-Z]{2}|AUTO)$/.test(args.vpnCountry)))return send(res,200,err(m.id,-32602,'VPN must be AUTO or a two-letter country code (FR, DE, US, etc.)'));
+    for(const key of ['vpnCity','vpnLogicalId','vpnServerId']){
+      if(args[key]!==undefined&&(typeof args[key]!=='string'||args[key].length>120))return send(res,200,err(m.id,-32602,'Invalid requested Proton '+key));
+      if(args[key]!==undefined&&!args.vpnCountry)return send(res,200,err(m.id,-32602,'Choose vpnCountry when selecting a Proton city or server'));
+    }
+    if(name!=='book_now'&&Object.keys(args).some(k=>!['action','url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex','vpnCountry','vpnCity','vpnLogicalId','vpnServerId'].includes(k)))return send(res,200,err(m.id,-32602,'Guest information must stay local in Brave'));
+    payload={url:args.url,checkin:args.checkin,checkout:args.checkout,adults:args.adults,roomType:args.roomType,maxTotal:args.maxTotal,currency:args.currency};
+    if(args.guestIndex!==undefined)payload.guestIndex=args.guestIndex;
+    if(args.vpnCountry!==undefined)payload.vpnCountry=args.vpnCountry;
+    for(const key of ['vpnCity','vpnLogicalId','vpnServerId'])if(args[key]!==undefined)payload[key]=args[key];
+    if(name==='book_now'){
+      payload.authorization='submit_this_booking';
+      payload.authorizedAt=Date.now();
+      payload.maxCancellationCharge=args.maxCancellationCharge;
+      payload.cancellationCurrency=args.cancellationCurrency;
+    }
+   }else if(Object.keys(args).some(k=>k!=='action'))return send(res,200,err(m.id,-32602,'No extra fields permitted'));
+   const queuedAction=name==='book_now'?'book_now':args.action;
+   const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[queuedAction,JSON.stringify(payload)]);
+   return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0])}]}));
+  }
+  if(name==='get_command_status'){
+   if(!Number.isSafeInteger(args.id)||args.id<1)return send(res,200,err(m.id,-32602,'Invalid command id'));
+   const r=await db().query('SELECT id,action,status,result,created_at,finished_at FROM extension_commands WHERE id=$1',[args.id]);
+   return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(r.rows[0]||null)}]}));
+  }
+  return send(res,200,err(m.id,-32602,'Unknown tool'));
+ }catch(e){console.error('MCP bridge failure',e.code||e.name);return send(res,200,err(m.id,-32603,'Command service unavailable'))}
+},'i').exec(String(view.totalHint||'').trim());
+    if(!totalMatch)return send(res,200,err(m.id,-32602,'Exact displayed price and currency must be verified before submission'));
+    const totalCurrency=totalMatch[1].toUpperCase(),total=Number(totalMatch[2].replace(/,/g,''));
+    if(!Number.isFinite(total)||total<=0||total>100000)return send(res,200,err(m.id,-32602,'Invalid current total'));
+    if(args.maxTotal!==undefined&&args.currency===totalCurrency&&total>args.maxTotal)
+     return send(res,200,err(m.id,-32602,'Displayed total exceeds user-provided price cap'));
+    if(previous.currency===totalCurrency&&Number.isFinite(previous.maxTotal)&&total>previous.maxTotal)
+     return send(res,200,err(m.id,-32602,'Displayed total exceeds prepared price cap'));
+    const policies=Array.isArray(view.policies)?view.policies.map(String):[];
+    const feeRegex=new RegExp('if you cancel[^.]*?pay\\s+(EUR|MAD|USD|GBP|AUD)\\s+'+amountPattern,'i');
+    let feeMatch=null;
+    for(const policy of policies){const found=feeRegex.exec(policy);if(found){feeMatch=found;break}}
+    const cancellation=feeMatch?Number(feeMatch[2].replace(/,/g,'')):
+      policies.some(p=>/free cancellation/i.test(p))?0:null;
+    const cancelCurrency=feeMatch?feeMatch[1].toUpperCase():totalCurrency;
+    if(cancellation===null||!Number.isFinite(cancellation)||cancellation<0||cancellation>100000)
+     return send(res,200,err(m.id,-32602,'Cancellation charge must be explicitly visible and verified'));
+    const newer=(await db().query("SELECT id FROM extension_commands WHERE action='book_now' AND id>$1 LIMIT 1",[inspectionRow.id])).rows[0];
+    if(newer)return send(res,200,err(m.id,-32602,'Another Book now command has already been queued; inspect its outcome before retrying'));
+    const payload={url:previous.url,checkin:previous.checkin,checkout:previous.checkout,
+      adults:previous.adults,roomType:previous.roomType,maxTotal:total,currency:totalCurrency,
+      maxCancellationCharge:cancellation,cancellationCurrency:cancelCurrency,
+      authorization:'submit_this_booking',authorizedAt:Date.now()};
+    for(const field of ['guestIndex','vpnCountry','vpnCity','vpnLogicalId','vpnServerId'])
+      if(previous[field]!==undefined)payload[field]=previous[field];
+    const queued=await db().query("INSERT INTO extension_commands (action,payload) VALUES ('book_now',$1::jsonb) RETURNING id,action,status,created_at",[JSON.stringify(payload)]);
+    return send(res,200,ok(m.id,{content:[{type:'text',text:JSON.stringify(queued.rows[0])}]}));
+   }
    if(!bookingCommands.has(args.action))return send(res,200,err(m.id,-32602,'Unsupported booking action'));
    let payload={};
    if(args.action==='start_booking'){
