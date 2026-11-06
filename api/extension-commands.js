@@ -1,5 +1,7 @@
 import pg from 'pg';
 import crypto from 'node:crypto';
+import {valid as validOAuth} from './oauth.js';
+import {BROWSER_ACTIONS,validateBrowserCommand} from './browser-command-utils.js';
 // Preview must use the isolated staging branch, never the production DATABASE_URL.
 const isProduction=process.env.VERCEL_ENV==='production';
 const connectionString=isProduction?process.env.DATABASE_URL:process.env.STAGING_DATABASE_URL;
@@ -15,10 +17,18 @@ function db(){
 
  return pool;
 }
-const allowed=new Set(['open_listing','inspect_active','start_booking','resume_booking','inspect_booking','confirm_booking']);
+const allowed=new Set(['open_listing','inspect_active','start_booking','book_now','resume_booking','inspect_booking','confirm_booking',...BROWSER_ACTIONS]);
 // Separate scoped token; intentionally do not fall back to dashboard admin credentials.
 const reply=(res,code,body)=>{res.setHeader('Cache-Control','no-store');return res.status(code).json(body)};
-function authorized(req){const a=(req.headers.authorization||'').replace(/^Bearer /i,'');const b=process.env.EXTENSION_COMMAND_TOKEN||'';return !!b&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}
+function authorized(req){
+ const bearer=(req.headers.authorization||'').replace(/^Bearer /i,'');
+ const staticToken=process.env.EXTENSION_COMMAND_TOKEN||'';
+ if(staticToken&&bearer.length===staticToken.length&&crypto.timingSafeEqual(Buffer.from(bearer),Buffer.from(staticToken)))return true;
+ // Scoped pairing tokens can only retrieve and acknowledge commands.
+ // They are never authorized to insert commands into the queue.
+ const paired=validOAuth(bearer,'extension');
+ return paired?.scope==='command:poll'&&(req.method==='GET'||req.method==='PATCH');
+}
 export default async function handler(req,res){
  if(!authorized(req))return reply(res,401,{error:'Unauthorized'});
  try{
@@ -30,20 +40,43 @@ export default async function handler(req,res){
     if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\/hotel\/ma\/[a-z0-9-]+\.en-gb\.html$/.test(u.pathname))return reply(res,400,{error:'Only Booking.com Morocco listings allowed'});
    }
    if(JSON.stringify(payload).length>2500)return reply(res,400,{error:'Command too large'});
-   if(action==='start_booking'){
+   if(action==='start_booking'||action==='book_now'){
     let u;try{u=new URL(payload.url)}catch{return reply(res,400,{error:'Invalid hotel URL'})}
     if(u.protocol!=='https:'||u.hostname!=='www.booking.com'||!/^\/hotel\/ma\/[a-z0-9-]+\.en-gb\.html$/.test(u.pathname)||u.username||u.password)return reply(res,400,{error:'Only Morocco hotel listing URLs allowed'});
     const dt=/^\d{4}-\d{2}-\d{2}$/;
     const a=new Date(String(payload.checkin)+'T00:00:00Z'),b=new Date(String(payload.checkout)+'T00:00:00Z');
     if(!dt.test(payload.checkin)||!dt.test(payload.checkout)||!Number.isFinite(+a)||!Number.isFinite(+b)||b<=a||b-a>30*86400000)return reply(res,400,{error:'Invalid stay dates'});
     if(!Number.isInteger(payload.adults)||payload.adults<1||payload.adults>8||typeof payload.roomType!=='string'||payload.roomType.length>80)return reply(res,400,{error:'Invalid guest count or room type'});
-    if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
-    if(Object.keys(payload).some(k=>!['url','checkin','checkout','adults','roomType','maxTotal','currency'].includes(k)))return reply(res,400,{error:'Unexpected field; do not upload guest identities'});
+    if(typeof payload.maxTotal!=='number'||!Number.isFinite(payload.maxTotal)||payload.maxTotal<=0||payload.maxTotal>100000||!['EUR','MAD','GBP','USD','AUD'].includes(payload.currency))return reply(res,400,{error:'Maximum total and currency required'});
+    if(payload.guestIndex!==undefined&&(!Number.isInteger(payload.guestIndex)||payload.guestIndex<1||payload.guestIndex>1000))return reply(res,400,{error:'Guest selection index must be 1–1000'});
+    const safeFields=['url','checkin','checkout','adults','roomType','maxTotal','currency','guestIndex','vpnCountry','vpnCity','vpnLogicalId','vpnServerId'];
+    if(action==='book_now'){
+      if(payload.authorization!=='submit_this_booking'||!Number.isSafeInteger(payload.authorizedAt)||payload.authorizedAt>Date.now()+2*60*1000||Date.now()-payload.authorizedAt>20*60*1000)
+        return reply(res,400,{error:'Book now needs a fresh explicit submission authorization'});
+      if(typeof payload.maxCancellationCharge!=='number'||!Number.isFinite(payload.maxCancellationCharge)||payload.maxCancellationCharge<0||payload.maxCancellationCharge>100000||!['EUR','MAD','USD','GBP','AUD'].includes(payload.cancellationCurrency))
+        return reply(res,400,{error:'Book now needs a cancellation ceiling and currency'});
+      if(!payload.roomType.trim())return reply(res,400,{error:'Book now needs an exact room type'});
+    }
+    if(payload.vpnCountry!==undefined&&(typeof payload.vpnCountry!=='string'||!/^(?:[A-Z]{2}|AUTO)$/.test(payload.vpnCountry)))return reply(res,400,{error:'VPN must be AUTO or a two-letter ISO country code'});
+    for(const key of ['vpnCity','vpnLogicalId','vpnServerId']){
+      if(payload[key]!==undefined&&(typeof payload[key]!=='string'||payload[key].length>120))return reply(res,400,{error:'Invalid Proton '+key});
+      if(payload[key]!==undefined&&!payload.vpnCountry)return reply(res,400,{error:'Select VPN country before specifying a Proton city or server'});
+    }
+    const extra=action==='book_now'?['authorization','authorizedAt','maxCancellationCharge','cancellationCurrency']:[];
+    if(Object.keys(payload).some(k=>![...safeFields,...extra].includes(k)))return reply(res,400,{error:'Unexpected field; guest identities must remain local to Brave'});
+   }else if(BROWSER_ACTIONS.includes(action)){
+    let validated;try{validated=validateBrowserCommand({action,...payload})}catch(e){return reply(res,400,{error:e.message})}
+    if(JSON.stringify(validated.payload)!==JSON.stringify(payload))return reply(res,400,{error:'Unexpected browser payload shape'});
    }else if(!['open_listing'].includes(action)&&Object.keys(payload).length)return reply(res,400,{error:'This action takes no payload'});
    const r=await db().query('INSERT INTO extension_commands (action,payload) VALUES ($1,$2::jsonb) RETURNING id,action,status,created_at',[action,JSON.stringify(payload)]);
    return reply(res,201,{command:r.rows[0]});
   }
   if(req.method==='GET'){
+   // Non-destructive connectivity probe: do not consume any queued command.
+   if(String(req.query?.health||'')==='1'){
+    const r=await db().query("SELECT COUNT(*)::integer AS pending FROM extension_commands WHERE status='pending'");
+    return reply(res,200,{service:'ready',queue_pending:r.rows[0]?.pending??0,commands_supported:true});
+   }
    if(req.query?.id){
     if(!/^\d+$/.test(String(req.query.id)))return reply(res,400,{error:'Invalid id'});
     const r=await db().query('SELECT id,action,status,result,created_at,finished_at FROM extension_commands WHERE id=$1',[req.query.id]);
